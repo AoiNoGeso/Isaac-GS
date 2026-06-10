@@ -38,8 +38,7 @@ Isaac-GS/
 
 - [Isaac Lab](https://isaac-sim.github.io/IsaacLab/) がインストールされたuv仮想環境（`~/env_isaaclab`）
 - [Recon-GS](https://github.com/AoiNoGeso/Recon-GS) で生成した `gaussian.ply` と `tsdf_fusion_post.ply`
-
-* Isaac Sim 6.0 のインストールは[公式ドキュメント](https://isaac-sim.github.io/IsaacLab/develop/source/setup/installation/pip_installation.html)を参照してください
+- Isaac Sim 6.0 およびIsaac Labのインストールは[公式ドキュメント](https://isaac-sim.github.io/IsaacLab/develop/source/setup/installation/pip_installation.html)を参照してください
 
 ## パイプライン実行手順
 
@@ -90,10 +89,9 @@ uv run stage_generation/compose_stage.py \
 
 ```
 /World                        （Xform, defaultPrim）
-├── /World/gs_splat           （3DGSスプラット参照: gs.usdc, visible）
-└── /World/mesh_collider      （メッシュ参照: mesh.usd, invisible）
-    └── /World/mesh_collider/mesh_
-                              （PhysicsCollisionAPI + PhysicsMeshCollisionAPI 付与）
+├── /gs_splat           （3DGSスプラット参照: gs.usdc, visible）
+└── /mesh_collider      （メッシュ参照: mesh.usd, invisible）
+    └── /mesh_          （PhysicsCollisionAPI + PhysicsMeshCollisionAPI 付与）
 ```
 
 | プリム | 役割 | Visible | コリジョン |
