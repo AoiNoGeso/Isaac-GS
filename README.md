@@ -1,6 +1,6 @@
 # Isaac-GS
 
-[Recon-GS](https://github.com/AoiNoGeso/Recon-GS) によって生成した 3D Gaussian Splatting (.ply) と床・壁メッシュ (.ply) を Isaac Sim 6.0 で使用できるようにするためのパイプラインです．
+[Recon-GS](https://github.com/AoiNoGeso/Recon-GS) によって生成した 3D Gaussian Splatting (.ply) と床・壁メッシュ (.ply) を Isaac Sim で使用できるようにするためのパイプラインです．
 
 ## 概要
 
@@ -13,7 +13,9 @@ convert_gs.py          →   gs.usdc        （視覚：3DGSスプラット，Y-
 convert_mesh.py (床)   →   floor_mesh.usd （物理：床コライダ）
 convert_mesh.py (壁)   →   wall_mesh.usd  （物理：壁コライダ・ContactSensor対象）
         ↓
-compose_stage.py → stage.usda （Isaac Sim用ステージ）
+compose_stage.py → stage.usda （NavMeshVolume配置済みの統合ステージ）
+        ↓
+Isaac Sim GUI で NavMesh Bake → stage.usda に保存
 ```
 
 生成される `stage.usda` では，3DGSを視覚表現として参照し，床・壁メッシュを不可視のコライダとして重ねることで，リアルな見た目と正確な物理コリジョンを両立します．床と壁を別プリムとして管理することで，強化学習タスクでの壁衝突判定（ContactSensor）を床接触と分離して扱えます．
@@ -28,7 +30,7 @@ Isaac-GS/
 │   └── compose_stage.py   # gs.usdc + floor_mesh.usd + wall_mesh.usd → stage.usda 合成
 ├── stages/                # 生成済みステージの保存先
 │   ├── corridor1/
-│   │   ├── stage.usda     ← compose_stage.py の出力
+│   │   ├── stage.usda     ← compose_stage.py + NavMesh Bake の出力
 │   │   ├── gs.usdc        ← convert_gs.py の出力
 │   │   ├── floor_mesh.usd ← convert_mesh.py の出力（床）
 │   │   └── wall_mesh.usd  ← convert_mesh.py の出力（壁）
@@ -37,15 +39,17 @@ Isaac-GS/
 │       ├── gs.usdc
 │       ├── floor_mesh.usd
 │       └── wall_mesh.usd
-└── tasks/                 # Isaac Lab 強化学習タスク (未実装)
-    └── point_navigation/
-        ├── __init__.py
-        ├── point_navigation_env_cfg.py
-        ├── point_navigation_env.py
-        └── agents/
-            ├── __init__.py
-            └── rsl_rl_ppo_cfg.py
-
+├── tasks/                 # Isaac Lab強化学習タスク
+│   └── point_navigation/
+│       ├── __init__.py
+│       ├── point_navigation_env_cfg.py
+│       ├── point_navigation_env.py
+│       └── agents/
+│           ├── __init__.py
+│           └── rsl_rl_ppo_cfg.py
+└── sample_data/           # サンプルデータ（.gitignore対象）
+    ├── gaussian.ply
+    └── outputs/
 ```
 
 ## 前提条件
@@ -55,8 +59,6 @@ Isaac-GS/
 - Isaac Sim 6.0 および Isaac Lab のインストールは[公式ドキュメント](https://isaac-sim.github.io/IsaacLab/develop/source/setup/installation/pip_installation.html)を参照してください
 
 ## パイプライン実行手順
-ここでは「corridor1」という名称のstageを作ることを想定しています．
-stage名は適宜変更して下さい．
 
 **1. 仮想環境を有効化**
 
@@ -99,24 +101,39 @@ uv run stage_generation/convert_mesh.py \
 **5. stage.usda の合成**
 
 `gs.usdc`・`floor_mesh.usd`・`wall_mesh.usd` が揃ったディレクトリを `-i` に指定します．
+CollisionAPIの付与とNavMeshVolumeの自動配置が行われます．
 
 ```bash
 uv run stage_generation/compose_stage.py \
     -i stages/corridor1
 ```
 
-出力: `stages/corridor1/stage.usda`
+出力: `stages/corridor1/stage.usda`（NavMeshVolume配置済み・NavMesh Bake未実施）
+
+**6. NavMesh Bake（GUIで実施）**
+
+> ⚠️ NavMesh BakeはスタンドアロンスクリプトからはAPIの制約により実行できないため，GUIで手動で行います．
+
+1. Isaac Sim を起動して `stages/corridor1/stage.usda` を開く
+2. `Window > Navigation > NavMesh` パネルを開く
+3. **Bake** ボタンを押す（NavMeshVolumeは自動配置済みのためそのまま押すだけ）
+4. NavMeshの青いオーバーレイが床面上に表示されることを確認する
+5. `File > Save` で保存する
+
+出力: `stages/corridor1/stage.usda`（NavMesh Bake済み・RL環境で使用可能）
 
 ## 出力ファイルの構成
 
 生成される `stage.usda` のプリム構成は以下の通りです．
 
 ```
-/World                   （Xform，defaultPrim）
-└── /World/env           （Xform，環境ルート）
-    ├── /World/env/gs          （3DGSスプラット参照: gs.usdc，visible）
-    ├── /World/env/floor_mesh  （床メッシュ参照: floor_mesh.usd，invisible）
-    └── /World/env/wall_mesh   （壁メッシュ参照: wall_mesh.usd，invisible）
+/World                        （Xform，defaultPrim）
+└── /World/env                （Xform，環境ルート）
+    ├── /World/env/gs         （3DGSスプラット参照: gs.usdc，visible）
+    ├── /World/env/floor_mesh （床メッシュ参照: floor_mesh.usd，invisible）
+    └── /World/env/wall_mesh  （壁メッシュ参照: wall_mesh.usd，invisible）
+/World/PhysicsScene           （PhysicsScene）
+/World/NavMeshVolume          （NavMeshVolume，floor_meshのAABBから自動配置）
 ```
 
 | プリム | 役割 | Visible | コリジョン | ContactSensor対象 |
@@ -131,3 +148,4 @@ uv run stage_generation/compose_stage.py \
 
 - `convert_gs.py` 内の `GSPLAT_DIR` / `USD_LIBS` は環境に合わせてパスを変更してください．
 - `compose_stage.py` は `gs.usdc`・`floor_mesh.usd`・`wall_mesh.usd` の3ファイルが全て揃っていない場合エラーで終了します．
+- NavMesh BakeはGUIのNavMeshパネルから手動で実施してください．スタンドアロンスクリプトからのBakeは現在の環境（Isaac Sim 6.0）では動作しません．
