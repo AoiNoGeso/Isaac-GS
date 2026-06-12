@@ -8,21 +8,22 @@ from isaacsim import SimulationApp
 def main():
     # 引数の設定
     parser = argparse.ArgumentParser()
-    parser.add_argument("-i", "--input_dir", required=True, help="Input directory path")
     parser.add_argument(
-        "-o", "--output_dir", required=True, help="Output directory path"
+        "-i", "--input", required=True, help="Input mesh file path (PLY, OBJ, etc.)"
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        required=True,
+        help="Output USD file path (e.g. floor_mesh.usd)",
     )
     args = parser.parse_args()
-
-    # パスの構築
-    out_path = os.path.join(args.output_dir, "mesh.usd")
 
     # SimulationAppの起動
     print("Starting SimulationApp...")
     app = SimulationApp({"headless": True})
 
     # Isaac Simの仕様上，omni関連はSimulationApp起動後にインポートする必要があります
-    import omni.kit.app
     import omni.kit.asset_converter as ac
 
     async def convert(input_path, output_path):
@@ -38,9 +39,8 @@ def main():
         else:
             print("Done:", output_path)
 
-    # 変換処理の実行
-    print(f"Converting: {args.input_dir} -> {out_path}")
-    asyncio.get_event_loop().run_until_complete(convert(args.input_dir, out_path))
+    print(f"Converting: {args.input} -> {args.output}")
+    asyncio.get_event_loop().run_until_complete(convert(args.input, args.output))
     app.close()
 
 
