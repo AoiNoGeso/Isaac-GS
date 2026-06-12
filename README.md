@@ -174,7 +174,7 @@ uv run tasks/point_navigation/train.py \
 | シミュレータ | Isaac Sim 6.0 |
 | RL フレームワーク | skrl 2.x（PPO） |
 | ロボット | Carter V1（差動二輪） |
-| 観測 | RGB-D 画像 84×84 px |
+| 観測 | RGB-D 画像 128×128 px |
 | CNN エンコーダ | Conv(4→32)→Conv(32→64)→Conv(64→64)→FC(256) |
 | 衝突判定 | PhysX contact event callback（wall_mesh のみ） |
 | NavMesh | omni.anim.navigation.core（Bake は GUI で実施） |
