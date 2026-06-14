@@ -23,6 +23,9 @@ args = parser.parse_args()
 from isaacsim import SimulationApp
 app = SimulationApp({"headless": args.headless})
 
+import omni.log
+omni.log.set_level(omni.log.Level.ERROR, channel="omni.physx.plugin")
+
 import numpy as np
 import torch
 import gymnasium as gym

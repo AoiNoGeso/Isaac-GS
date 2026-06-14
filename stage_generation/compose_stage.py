@@ -43,7 +43,7 @@ def main():
     app = SimulationApp({"headless": True})
 
     import omni.usd
-    from pxr import Gf, PhysxSchema, Sdf, Usd, UsdGeom, UsdPhysics, Vt
+    from pxr import Gf, PhysxSchema, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
 
     # ─────────────────────────────────────────────────────────────────
     # Step 1: ステージ作成・prim 配置・保存
@@ -76,6 +76,11 @@ def main():
     # ─────────────────────────────────────────────────────────────────
     stage2 = Usd.Stage.Open(out_path)
 
+    # PhysX マテリアルを作成（PxShape::getMaterialFromInternalFaceIndex 警告を抑制）
+    mat_prim = UsdShade.Material.Define(stage2, "/env/PhysicsMaterial")
+    UsdPhysics.MaterialAPI.Apply(mat_prim.GetPrim())
+    PhysxSchema.PhysxMaterialAPI.Apply(mat_prim.GetPrim())
+
     def apply_collision(root_path: str) -> int:
         root = stage2.GetPrimAtPath(root_path)
         if not root.IsValid():
@@ -86,7 +91,16 @@ def main():
                 UsdPhysics.CollisionAPI.Apply(prim)
                 mesh_api = UsdPhysics.MeshCollisionAPI.Apply(prim)
                 mesh_api.CreateApproximationAttr(UsdPhysics.Tokens.none)
+                # GeomSubset を非アクティブ化してフェイスマテリアルインデックス警告を抑制
+                for child in prim.GetChildren():
+                    if child.GetTypeName() == "GeomSubset":
+                        child.SetActive(False)
                 count += 1
+        UsdShade.MaterialBindingAPI.Apply(root).Bind(
+            mat_prim,
+            UsdShade.Tokens.strongerThanDescendants,
+            "physics",
+        )
         return count
 
     floor_count = apply_collision("/env/floor_mesh")
@@ -99,7 +113,7 @@ def main():
             PhysxSchema.PhysxContactReportAPI.Apply(prim)
 
     stage2.GetRootLayer().Save()
-    print(f"Step 2 完了: CollisionAPI 付与 (floor={floor_count}, wall={wall_count}), PhysxContactReportAPI 付与 (wall)")
+    print(f"Step 2 完了: CollisionAPI + PhysicsMaterial 付与 (floor={floor_count}, wall={wall_count}), PhysxContactReportAPI 付与 (wall)")
 
     # ─────────────────────────────────────────────────────────────────
     # Step 3: NavMeshVolume 配置（AABB を floor_mesh から自動計算）

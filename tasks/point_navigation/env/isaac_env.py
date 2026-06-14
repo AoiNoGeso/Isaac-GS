@@ -66,7 +66,6 @@ class PointNavIsaacEnv:
         import omni.usd
         import omni.kit.app
         from pxr import UsdGeom
-
         enable_extension("omni.anim.navigation.bundle")
 
         kit_app = omni.kit.app.get_app()
