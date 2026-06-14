@@ -39,7 +39,7 @@ from skrl.utils import set_seed
 set_seed(42)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-IMG_SIZE = 128
+IMG_SIZE = 84
 
 
 def main():

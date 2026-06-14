@@ -1,8 +1,9 @@
 """
 isaacsim.core ベースの Point Navigation 環境コア（IsaacSim 6.0 対応）
 
-NavMesh は compose_stage.py で事前にベイク・保存済みのステージを使う前提．
-ランタイムでの NavMesh bake は行わない．
+観測: RGB (3,84,84) + goal ベクトル (2,)
+行動: [v_x_norm, ω_z_norm] → ユニサイクルモデルで車輪速度に変換
+NavMesh: 毎起動時にランタイム bake（floor_mesh を一時可視化）
 """
 
 from __future__ import annotations
@@ -11,6 +12,11 @@ from dataclasses import dataclass
 
 import numpy as np
 import torch
+
+# Carter V1 物理定数
+_V_LINEAR_MAX  = 1.0   # m/s
+_V_ANGULAR_MAX = 1.0   # rad/s
+_WHEEL_BASE    = 0.57  # m
 
 
 @dataclass
@@ -22,17 +28,15 @@ class PointNavEnvCfg:
     )
     robot_prim_path: str = "/World/Robot"
     camera_prim_path: str = "/World/Robot/chassis_link/front_cam"
-    camera_resolution: tuple[int, int] = (128, 128)
-    camera_depth_max: float = 10.0
+    camera_resolution: tuple[int, int] = (84, 84)
 
     physics_dt: float = 1.0 / 60.0
     rendering_dt: float = 1.0 / 30.0
     decimation: int = 2
 
-    action_scale: float = 5.0
-    goal_threshold: float = 0.4
-    collision_threshold: float = 5.0  # [N]
-    min_goal_dist: float = 2.0
+    goal_threshold: float = 0.4       # m
+    collision_threshold: float = 5.0  # N
+    min_goal_dist: float = 2.0        # m
     max_episode_steps: int = 1800
 
     w_dist: float = 0.5
@@ -69,11 +73,9 @@ class PointNavIsaacEnv:
         for _ in range(10):
             kit_app.update()
 
-        # extension ロード後に import
         import omni.anim.navigation.core as nav
         self._inav = nav.acquire_interface()
 
-        # ステージとロボットを参照として追加
         add_reference_to_stage(usd_path=self.cfg.stage_path, prim_path="/World/env")
         add_reference_to_stage(usd_path=self.cfg.robot_usd, prim_path=self.cfg.robot_prim_path)
 
@@ -104,11 +106,9 @@ class PointNavIsaacEnv:
         if not baked:
             print("[NavMesh] Warning: Bake 未完了．スポーン位置の NavMesh サンプリングが機能しません．")
 
-        # floor_mesh を invisible に戻す
         if floor_prim.IsValid():
             UsdGeom.Imageable(floor_prim).MakeInvisible()
 
-        # Articulation（reset 後に initialize）
         self._robot = Articulation(prim_paths_expr=self.cfg.robot_prim_path)
         self._robot.initialize()
 
@@ -116,10 +116,8 @@ class PointNavIsaacEnv:
         self._left_wheel_idx  = list(dof_names).index("left_wheel")
         self._right_wheel_idx = list(dof_names).index("right_wheel")
 
-        # wall_mesh 衝突検知: PhysX contact event callback
         self._setup_contact_callback()
 
-        # カメラセンサー
         from .camera_sensor import setup_rgbd_camera
         self._camera = setup_rgbd_camera(
             prim_path=self.cfg.camera_prim_path,
@@ -127,7 +125,6 @@ class PointNavIsaacEnv:
         )
 
     def _setup_contact_callback(self):
-        """wall_mesh との接触力を PhysX contact callback で監視する．"""
         try:
             from omni.physx import get_physx_simulation_interface
 
@@ -180,10 +177,15 @@ class PointNavIsaacEnv:
     # ──────────────────────────────────────────────────
 
     def step(self, action: np.ndarray) -> tuple[dict, float, bool, bool, dict]:
-        wheel_vel = np.clip(action, -1.0, 1.0) * self.cfg.action_scale
+        # ユニサイクルモデル → 左右車輪速度
+        v_x   = float(np.clip(action[0], -1.0, 1.0)) * _V_LINEAR_MAX
+        omega  = float(np.clip(action[1], -1.0, 1.0)) * _V_ANGULAR_MAX
+        v_L   = v_x - omega * _WHEEL_BASE / 2.0
+        v_R   = v_x + omega * _WHEEL_BASE / 2.0
+
         vel_target = np.zeros(self._robot.num_dof, dtype=np.float32)
-        vel_target[self._left_wheel_idx]  = wheel_vel[0]
-        vel_target[self._right_wheel_idx] = wheel_vel[1]
+        vel_target[self._left_wheel_idx]  = v_L
+        vel_target[self._right_wheel_idx] = v_R
         self._robot.set_joint_velocity_targets(velocities=vel_target[np.newaxis, :])
 
         for i in range(self.cfg.decimation):
@@ -201,19 +203,37 @@ class PointNavIsaacEnv:
     # ──────────────────────────────────────────────────
 
     def _get_obs(self) -> dict:
-        rgb, depth = self._camera.get_rgbd()
+        rgb, _ = self._camera.get_rgbd()
         rgb_t = (rgb.astype(np.float32) / 255.0).transpose(2, 0, 1)
-        depth_finite = np.where(np.isfinite(depth), depth, self.cfg.camera_depth_max)
-        depth_t = (np.clip(depth_finite, 0.0, self.cfg.camera_depth_max)
-                   / self.cfg.camera_depth_max)[np.newaxis]
-        return {"rgb": rgb_t, "depth": depth_t}
+        goal_vec = self._compute_goal_vec()
+        return {"rgb": rgb_t, "goal": goal_vec}
+
+    def _compute_goal_vec(self) -> np.ndarray:
+        """ゴールへの相対極座標ベクトル (d_norm, angle_norm) を返す．Y-up 座標系．"""
+        pos  = self._get_robot_pos()
+        quat = self._get_robot_quat()  # (w, x, y, z)
+
+        dx = self._goal_pos[0] - pos[0]
+        dz = self._goal_pos[2] - pos[2]
+        dist = float(np.sqrt(dx ** 2 + dz ** 2))
+        d_norm = float(np.clip(dist / 10.0, 0.0, 1.0))
+
+        # Y 軸周り回転角（yaw）
+        w, x, y, z = quat
+        yaw = float(np.arctan2(2.0 * (w * y + x * z), 1.0 - 2.0 * (y ** 2 + z ** 2)))
+
+        angle_to_goal = float(np.arctan2(dx, -dz))
+        angle_rel = (angle_to_goal - yaw + np.pi) % (2.0 * np.pi) - np.pi
+        angle_norm = float(angle_rel / np.pi)
+
+        return np.array([d_norm, angle_norm], dtype=np.float32)
 
     # ──────────────────────────────────────────────────
     # 報酬
     # ──────────────────────────────────────────────────
 
     def _compute_reward(self) -> tuple[float, dict]:
-        pos     = self._get_robot_pos()
+        pos      = self._get_robot_pos()
         cur_dist = float(np.linalg.norm(self._goal_pos[[0, 2]] - pos[[0, 2]]))
         success  = cur_dist < self.cfg.goal_threshold
         collision = self._check_collision()
@@ -256,6 +276,13 @@ class PointNavIsaacEnv:
         if torch.is_tensor(pos):
             return pos[0].cpu().numpy()
         return np.array(pos[0], dtype=np.float32)
+
+    def _get_robot_quat(self) -> np.ndarray:
+        """クォータニオン (w, x, y, z) を返す．"""
+        _, quat = self._robot.get_world_poses()
+        if torch.is_tensor(quat):
+            return quat[0].cpu().numpy()
+        return np.array(quat[0], dtype=np.float32)
 
     def close(self):
         self._world.stop()

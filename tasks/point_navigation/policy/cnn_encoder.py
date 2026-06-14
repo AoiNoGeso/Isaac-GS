@@ -1,12 +1,10 @@
 """
-skrl 2.x 用 CNN + MLP ポリシー
+skrl 2.x 用 CNN + GoalEncoder ポリシー（Phase 1a）
 
-RGB (3, H, W) と Depth (1, H, W) を結合して CNN でエンコードし，
-得られた embedding を MLP actor/critic に渡す．
-
-skrl 2.x 変更点:
-  Model.__init__ の引数がすべて keyword-only になった．
-  compute() の inputs キーが "observations" になった．
+観測:
+  rgb  (3, 84, 84) → CNN Encoder → (256,)
+  goal (2,)        → Goal Encoder → (32,)
+  concat → (288,) → Actor / Critic MLP
 """
 
 from __future__ import annotations
@@ -17,25 +15,21 @@ from skrl.models.torch import Model, GaussianMixin, DeterministicMixin
 
 
 class CNNEncoder(nn.Module):
-    """
-    入力: RGB-D 結合テンソル (B, 4, H, W)
-    出力: embedding (B, 256)
-    """
+    """RGB (3, H, W) → embedding (256,)"""
 
-    def __init__(self, in_channels: int = 4, img_size: int = 128):
+    def __init__(self, img_size: int = 84):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=8, stride=4),  # → (32,20,20)
+            nn.Conv2d(3, 32, kernel_size=8, stride=4),   # → (32, 20, 20)
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2),           # → (64, 9, 9)
+            nn.Conv2d(32, 64, kernel_size=4, stride=2),  # → (64,  9,  9)
             nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1),           # → (64, 7, 7)
+            nn.Conv2d(64, 64, kernel_size=3, stride=1),  # → (64,  7,  7)
             nn.ReLU(),
             nn.Flatten(),
         )
         with torch.no_grad():
-            dummy = torch.zeros(1, in_channels, img_size, img_size)
-            flat_dim = self.net(dummy).shape[1]
+            flat_dim = self.net(torch.zeros(1, 3, img_size, img_size)).shape[1]
 
         self.fc = nn.Sequential(
             nn.Linear(flat_dim, 256),
@@ -46,16 +40,29 @@ class CNNEncoder(nn.Module):
         return self.fc(self.net(x))
 
 
+class GoalEncoder(nn.Module):
+    """goal (2,) → embedding (32,)"""
+
+    def __init__(self):
+        super().__init__()
+        self.fc = nn.Sequential(
+            nn.Linear(2, 32),
+            nn.ELU(),
+        )
+
+    def forward(self, g: torch.Tensor) -> torch.Tensor:
+        return self.fc(g)
+
+
 class PointNavActor(GaussianMixin, Model):
     """
     Gaussian policy（連続行動）
 
-    obs: dict {"rgb": (B,3,H,W), "depth": (B,1,H,W)}
-    action: (B, 2)  [-1, 1]
+    obs: dict {"rgb": (B,3,H,W), "goal": (B,2)}
+    action: (B, 2)  [-1, 1]  [v_x_norm, ω_z_norm]
     """
 
     def __init__(self, observation_space, action_space, device, img_size: int = 84):
-        # skrl 2.x: すべて keyword-only
         Model.__init__(
             self,
             observation_space=observation_space,
@@ -70,9 +77,10 @@ class PointNavActor(GaussianMixin, Model):
             max_log_std=2,
         )
 
-        self.encoder = CNNEncoder(in_channels=4, img_size=img_size)
-        self.mlp = nn.Sequential(
-            nn.Linear(256, 128),
+        self.cnn  = CNNEncoder(img_size=img_size)
+        self.goal = GoalEncoder()
+        self.mlp  = nn.Sequential(
+            nn.Linear(256 + 32, 128),
             nn.ELU(),
             nn.Linear(128, 64),
             nn.ELU(),
@@ -81,21 +89,12 @@ class PointNavActor(GaussianMixin, Model):
         self.log_std_param = nn.Parameter(torch.zeros(self.num_actions))
 
     def compute(self, inputs: dict, role: str):
-        # skrl 2.x: obs は inputs["observations"] に入る（Dict space は dict として渡される）
         obs = inputs["observations"]
-        if isinstance(obs, dict):
-            rgb   = obs["rgb"]
-            depth = obs["depth"]
-        else:
-            # フラットな場合のフォールバック（通常は来ない）
-            rgb   = obs[:, :3 * 84 * 84].view(-1, 3, 84, 84)
-            depth = obs[:, 3 * 84 * 84:].view(-1, 1, 84, 84)
-
-        x    = torch.cat([rgb, depth], dim=1)
-        feat = self.mlp(self.encoder(x))
-        mean = self.mean_layer(feat)
+        rgb  = obs["rgb"]
+        goal = obs["goal"]
+        feat = torch.cat([self.cnn(rgb), self.goal(goal)], dim=1)
+        mean = self.mean_layer(self.mlp(feat))
         log_std = self.log_std_param.expand_as(mean)
-        # skrl 2.x: (mean_actions, outputs_dict) の2値で返す
         return mean, {"log_std": log_std}
 
 
@@ -111,9 +110,10 @@ class PointNavCritic(DeterministicMixin, Model):
         )
         DeterministicMixin.__init__(self, clip_actions=False)
 
-        self.encoder = CNNEncoder(in_channels=4, img_size=img_size)
-        self.mlp = nn.Sequential(
-            nn.Linear(256, 128),
+        self.cnn  = CNNEncoder(img_size=img_size)
+        self.goal = GoalEncoder()
+        self.mlp  = nn.Sequential(
+            nn.Linear(256 + 32, 128),
             nn.ELU(),
             nn.Linear(128, 64),
             nn.ELU(),
@@ -122,14 +122,8 @@ class PointNavCritic(DeterministicMixin, Model):
 
     def compute(self, inputs: dict, role: str):
         obs = inputs["observations"]
-        if isinstance(obs, dict):
-            rgb   = obs["rgb"]
-            depth = obs["depth"]
-        else:
-            rgb   = obs[:, :3 * 84 * 84].view(-1, 3, 84, 84)
-            depth = obs[:, 3 * 84 * 84:].view(-1, 1, 84, 84)
-
-        x     = torch.cat([rgb, depth], dim=1)
-        value = self.mlp(self.encoder(x))
-        # skrl 2.x: (value, outputs_dict) の2値で返す
+        rgb  = obs["rgb"]
+        goal = obs["goal"]
+        feat  = torch.cat([self.cnn(rgb), self.goal(goal)], dim=1)
+        value = self.mlp(feat)
         return value, {}

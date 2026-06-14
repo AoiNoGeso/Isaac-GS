@@ -17,11 +17,11 @@ from .isaac_env import PointNavIsaacEnv, PointNavEnvCfg
 class PointNavGymEnv(gym.Env):
     """
     observation_space:
-        rgb:   Box(0, 1, (3, 84, 84), float32)
-        depth: Box(0, 1, (1, 84, 84), float32)
+        rgb:  Box(0, 1, (3, 84, 84), float32)
+        goal: Box(-1, 1, (2,), float32)
 
     action_space:
-        Box(-1, 1, (2,), float32)
+        Box(-1, 1, (2,), float32)  # [v_x_norm, ω_z_norm]
     """
 
     metadata = {"render_modes": ["rgb_array"]}
@@ -34,13 +34,12 @@ class PointNavGymEnv(gym.Env):
         W, H = self.cfg.camera_resolution
         self.observation_space = spaces.Dict(
             {
-                "rgb": spaces.Box(0.0, 1.0, shape=(3, H, W), dtype=np.float32),
-                "depth": spaces.Box(0.0, 1.0, shape=(1, H, W), dtype=np.float32),
+                "rgb":  spaces.Box(0.0, 1.0, shape=(3, H, W), dtype=np.float32),
+                "goal": spaces.Box(-1.0, 1.0, shape=(2,), dtype=np.float32),
             }
         )
         self.action_space = spaces.Box(-1.0, 1.0, shape=(2,), dtype=np.float32)
 
-        # IsaacSim 環境本体（SimulationApp 起動後に初期化）
         self._env: PointNavIsaacEnv | None = None
 
     def _lazy_init(self):
