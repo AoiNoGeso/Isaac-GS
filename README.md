@@ -13,11 +13,9 @@ convert_gs.py     →  gs.usdc        （視覚: 3DGS スプラット）
 convert_mesh.py   →  floor_mesh.usd （物理: 床コライダ）
 convert_mesh.py   →  wall_mesh.usd  （物理: 壁コライダ・衝突判定対象）
         ↓
-compose_stage.py  →  stage.usda  （CollisionAPI + NavMeshVolume 配置済み）
+compose_stage.py  →  stage.usda  （CollisionAPI + NavMeshVolume + PhysxContactReportAPI 配置済み）
         ↓
-Isaac Sim GUI で NavMesh Bake → stage.usda に保存
-        ↓
-RL 学習 (tasks/point_navigation/train.py)
+RL 学習 (tasks/point_navigation/train.py)  ← 起動時に NavMesh をランタイム bake
 ```
 
 生成される `stage.usda` は 3DGS を視覚表現とし，床・壁メッシュを不可視コライダとして重ねることで，リアルな見た目と正確な物理コリジョンを両立します．  
@@ -102,15 +100,9 @@ uv run stage_generation/compose_stage.py \
 
 出力: `sample_data/stages/corridor1/stage.usda`
 
-### 5. NavMesh Bake（GUI で手動実施）
+### 5. RL 学習
 
-> NavMesh Bake は Isaac Sim 6.0 のスタンドアロン API からは実行できないため，GUI で行います．
-
-1. Isaac Sim を起動し `sample_data/stages/corridor1/stage.usda` を開く
-2. `Window > Navigation > NavMesh` パネルを開く
-3. **Bake** ボタンを押す（NavMeshVolume は自動配置済み）
-4. 床面上に青いオーバーレイが表示されることを確認
-5. `File > Save` で保存
+NavMesh Bake は学習スクリプト起動時にランタイムで自動実行されます（floor_mesh を一時可視化して bake → 不可視化）。GUI での手動 Bake は不要です。
 
 ## 動作確認（Step 1〜5）
 
@@ -137,14 +129,14 @@ uv run tasks/point_navigation/check_env_v2.py --step 5 --headless
 
 ```bash
 # ヘッドレス学習（推奨）
-uv run tasks/point_navigation/train.py --headless
-
-# GUI 付き学習
-uv run tasks/point_navigation/train.py
+uv run tasks/point_navigation/train.py --headless --run-name my_run
 
 # チェックポイントから再開
 uv run tasks/point_navigation/train.py \
     --headless --checkpoint runs/point_nav/checkpoints/best.pt
+
+# wandb なしで学習
+uv run tasks/point_navigation/train.py --headless --no-wandb
 ```
 
 ## 出力ステージの Prim 構成
@@ -177,11 +169,11 @@ uv run tasks/point_navigation/train.py \
 | 観測 | RGB 84×84 px + goal ベクトル (2,) |
 | CNN エンコーダ | Conv(3→32)→Conv(32→64)→Conv(64→64)→FC(256) + GoalEnc FC(2→32) |
 | 衝突判定 | PhysX contact event callback（wall_mesh のみ） |
-| NavMesh | omni.anim.navigation.core（Bake は GUI で実施） |
+| NavMesh | omni.anim.navigation.core（起動時にランタイム bake） |
 
 ## 注意事項
 
 - `convert_gs.py` 内の `GSPLAT_DIR` / `USD_LIBS` パスは環境に合わせて修正してください．
 - `compose_stage.py` は `gs.usdc`・`floor_mesh.usd`・`wall_mesh.usd` の 3 ファイルが揃っていない場合エラーで終了します．
-- NavMesh Bake はスタンドアロン API からは動作しないため，必ず GUI で実施してください．
+- NavMesh Bake は学習スクリプト起動時に自動実行されます．GUI での手動 Bake は不要です．
 - `PointNavEnvCfg.stage_path` のデフォルトは絶対パスです．環境に合わせて変更してください．

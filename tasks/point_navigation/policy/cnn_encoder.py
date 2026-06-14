@@ -69,6 +69,7 @@ class PointNavActor(GaussianMixin, Model):
             action_space=action_space,
             device=device,
         )
+        self._img_size = img_size
         GaussianMixin.__init__(
             self,
             clip_actions=True,
@@ -90,8 +91,14 @@ class PointNavActor(GaussianMixin, Model):
 
     def compute(self, inputs: dict, role: str):
         obs = inputs["observations"]
-        rgb  = obs["rgb"]
-        goal = obs["goal"]
+        if isinstance(obs, dict):
+            rgb  = obs["rgb"]
+            goal = obs["goal"]
+        else:
+            # skrl wrap_env() が Dict obs をアルファベット順にフラット化:
+            # goal(2,) → rgb(3×84×84) の順
+            goal = obs[:, :2]
+            rgb  = obs[:, 2:].view(-1, 3, self._img_size, self._img_size)
         feat = torch.cat([self.cnn(rgb), self.goal(goal)], dim=1)
         mean = self.mean_layer(self.mlp(feat))
         log_std = self.log_std_param.expand_as(mean)
@@ -108,6 +115,7 @@ class PointNavCritic(DeterministicMixin, Model):
             action_space=action_space,
             device=device,
         )
+        self._img_size = img_size
         DeterministicMixin.__init__(self, clip_actions=False)
 
         self.cnn  = CNNEncoder(img_size=img_size)
@@ -122,8 +130,12 @@ class PointNavCritic(DeterministicMixin, Model):
 
     def compute(self, inputs: dict, role: str):
         obs = inputs["observations"]
-        rgb  = obs["rgb"]
-        goal = obs["goal"]
+        if isinstance(obs, dict):
+            rgb  = obs["rgb"]
+            goal = obs["goal"]
+        else:
+            goal = obs[:, :2]
+            rgb  = obs[:, 2:].view(-1, 3, self._img_size, self._img_size)
         feat  = torch.cat([self.cnn(rgb), self.goal(goal)], dim=1)
         value = self.mlp(feat)
         return value, {}

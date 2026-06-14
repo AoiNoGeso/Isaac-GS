@@ -16,7 +16,7 @@ Step 1〜5 個別動作確認スクリプト
   # Step 3: gymnasium API バリデーション（goal_vec が obs に含まれるか確認）
   uv run tasks/point_navigation/check_env_v2.py --step 3 --headless
 
-  # Step 5: PPO 数イテレーション（loss が NaN でないか確認）
+  # Step 5: PPO 128 ステップ動作確認（loss が NaN でないか確認）
   uv run tasks/point_navigation/check_env_v2.py --step 5 --headless
 """
 

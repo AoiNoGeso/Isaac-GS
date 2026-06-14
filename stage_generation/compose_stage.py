@@ -43,7 +43,7 @@ def main():
     app = SimulationApp({"headless": True})
 
     import omni.usd
-    from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, Vt
+    from pxr import Gf, PhysxSchema, Sdf, Usd, UsdGeom, UsdPhysics, Vt
 
     # ─────────────────────────────────────────────────────────────────
     # Step 1: ステージ作成・prim 配置・保存
@@ -52,24 +52,21 @@ def main():
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
     UsdGeom.SetStageMetersPerUnit(stage, 1.0)
 
-    world = UsdGeom.Xform.Define(stage, "/World")
-    stage.SetDefaultPrim(world.GetPrim())
-    UsdGeom.Xform.Define(stage, "/World/env")
+    # defaultPrim を "env" にすることで add_reference_to_stage(prim_path="/World/env") 時に
+    # /World/env/floor_mesh, /World/env/wall_mesh が正しく解決される
+    env_prim = UsdGeom.Xform.Define(stage, "/env")
+    stage.SetDefaultPrim(env_prim.GetPrim())
 
-    splat = stage.OverridePrim("/World/env/gs")
+    splat = stage.OverridePrim("/env/gs")
     splat.GetReferences().AddReference("./gs.usdc")
 
-    floor_prim = stage.OverridePrim("/World/env/floor_mesh")
+    floor_prim = stage.OverridePrim("/env/floor_mesh")
     floor_prim.GetReferences().AddReference("./floor_mesh.usd")
     UsdGeom.Imageable(floor_prim).MakeInvisible()
 
-    wall_prim = stage.OverridePrim("/World/env/wall_mesh")
+    wall_prim = stage.OverridePrim("/env/wall_mesh")
     wall_prim.GetReferences().AddReference("./wall_mesh.usd")
     UsdGeom.Imageable(wall_prim).MakeInvisible()
-
-    physics_scene = UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
-    physics_scene.CreateGravityDirectionAttr().Set((0.0, -1.0, 0.0))
-    physics_scene.CreateGravityMagnitudeAttr().Set(9.81)
 
     stage.GetRootLayer().Save()
     print("Step 1 完了: ステージ作成")
@@ -92,10 +89,17 @@ def main():
                 count += 1
         return count
 
-    floor_count = apply_collision("/World/env/floor_mesh")
-    wall_count = apply_collision("/World/env/wall_mesh")
+    floor_count = apply_collision("/env/floor_mesh")
+    wall_count = apply_collision("/env/wall_mesh")
+
+    # wall_mesh にのみ PhysxContactReportAPI を付与（衝突イベント検知に必要）
+    wall_root = stage2.GetPrimAtPath("/env/wall_mesh")
+    for prim in Usd.PrimRange(wall_root):
+        if prim.GetTypeName() == "Mesh":
+            PhysxSchema.PhysxContactReportAPI.Apply(prim)
+
     stage2.GetRootLayer().Save()
-    print(f"Step 2 完了: CollisionAPI 付与 (floor={floor_count}, wall={wall_count})")
+    print(f"Step 2 完了: CollisionAPI 付与 (floor={floor_count}, wall={wall_count}), PhysxContactReportAPI 付与 (wall)")
 
     # ─────────────────────────────────────────────────────────────────
     # Step 3: NavMeshVolume 配置（AABB を floor_mesh から自動計算）
@@ -110,7 +114,7 @@ def main():
         Usd.TimeCode.Default(),
         [UsdGeom.Tokens.default_, UsdGeom.Tokens.render],
     )
-    floor_root = active_stage.GetPrimAtPath("/World/env/floor_mesh")
+    floor_root = active_stage.GetPrimAtPath("/env/floor_mesh")
     aabb = bb_cache.ComputeWorldBound(floor_root).GetBox()
     bmin, bmax = aabb.GetMin(), aabb.GetMax()
     print(
@@ -129,11 +133,9 @@ def main():
     sy = (bmax[1] - bmin[1]) / 2.0 + (MARGIN_Y_BOT + MARGIN_Y_TOP) / 2.0
     sz = (bmax[2] - bmin[2]) + MARGIN_XZ * 2
 
-    vol_prim = active_stage.DefinePrim("/World/NavMeshVolume", "NavMeshVolume")
-    vol_prim.CreateAttribute("nav:area", Sdf.ValueTypeNames.String).Set("Walkable")
-    vol_prim.CreateAttribute("nav:volume:type", Sdf.ValueTypeNames.String).Set(
-        "Include"
-    )
+    vol_prim = active_stage.DefinePrim("/env/NavMeshVolume", "NavMeshVolume")
+    vol_prim.CreateAttribute("nav:area", Sdf.ValueTypeNames.Token).Set("Walkable")
+    vol_prim.CreateAttribute("nav:volume:type", Sdf.ValueTypeNames.Token).Set("Include")
     vol_prim.CreateAttribute("extent", Sdf.ValueTypeNames.Float3Array).Set(
         Vt.Vec3fArray([Gf.Vec3f(-0.5, -0.5, -0.5), Gf.Vec3f(0.5, 0.5, 0.5)])
     )

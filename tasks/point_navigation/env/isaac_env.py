@@ -93,12 +93,14 @@ class PointNavIsaacEnv:
             UsdGeom.Imageable(floor_prim).MakeVisible()
             for _ in range(10):
                 kit_app.update()
+        else:
+            print("[NavMesh] Warning: floor_mesh prim not found at /World/env/floor_mesh")
 
         self._inav.start_navmesh_baking()
         print("[NavMesh] Baking ...")
         baked = False
         for i in range(500):
-            kit_app.update()
+            self._world.step(render=True)
             if self._inav.get_navmesh() is not None:
                 print(f"[NavMesh] Bake 完了 (frame {i + 1})")
                 baked = True
@@ -131,7 +133,6 @@ class PointNavIsaacEnv:
             wall_path = "/World/env/wall_mesh"
 
             def on_contact_report(contact_headers, contact_data):
-                total_force = 0.0
                 for header in contact_headers:
                     a = str(header.actor0)
                     b = str(header.actor1)
@@ -139,8 +140,7 @@ class PointNavIsaacEnv:
                         start = header.contact_data_offset
                         end   = start + header.num_contact_data
                         for cd in contact_data[start:end]:
-                            total_force += abs(cd.normal_force)
-                self._wall_contact_force = total_force
+                            self._wall_contact_force += abs(cd.normal_force)
 
             physx_sim = get_physx_simulation_interface()
             self._contact_sub = physx_sim.subscribe_contact_report_events(on_contact_report)
@@ -161,14 +161,20 @@ class PointNavIsaacEnv:
         robot_pos = self._sample_navmesh_point()
         self._teleport_robot(robot_pos)
 
-        for _ in range(20):
+        best_goal, best_dist = robot_pos.copy(), 0.0
+        for _ in range(50):
             goal = self._sample_navmesh_point()
             dist = float(np.linalg.norm(goal[[0, 2]] - robot_pos[[0, 2]]))
+            if dist > best_dist:
+                best_goal, best_dist = goal, dist
             if dist >= self.cfg.min_goal_dist:
                 break
-        self._goal_pos = goal
-        self._prev_dist = dist
+        self._goal_pos = best_goal
+        self._prev_dist = best_dist
 
+        # テレポート後に物理を数ステップ安定化
+        for _ in range(5):
+            self._world.step(render=False)
         self._world.step(render=True)
         return self._get_obs()
 
@@ -244,7 +250,8 @@ class PointNavIsaacEnv:
         )
         self._prev_dist = cur_dist
         self._wall_contact_force = 0.0
-        return reward, {"success": success, "collision": collision, "dist": cur_dist}
+        robot_xz = pos[[0, 2]]
+        return reward, {"success": success, "collision": collision, "dist": cur_dist, "robot_xz": robot_xz}
 
     def _check_collision(self) -> bool:
         return self._wall_contact_force > self.cfg.collision_threshold
@@ -256,8 +263,11 @@ class PointNavIsaacEnv:
     def _sample_navmesh_point(self) -> np.ndarray:
         nm = self._inav.get_navmesh()
         if nm is not None:
-            p = nm.query_random_point()
-            return np.array([p[0], p[1], p[2]], dtype=np.float32)
+            for _ in range(20):
+                p = nm.query_random_point()
+                pos = np.array([p[0], p[1], p[2]], dtype=np.float32)
+                if np.all(np.isfinite(pos)):
+                    return pos
         return np.zeros(3, dtype=np.float32)
 
     def _teleport_robot(self, pos: np.ndarray):
