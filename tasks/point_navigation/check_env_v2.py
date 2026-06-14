@@ -34,7 +34,7 @@ from isaacsim import SimulationApp
 app = SimulationApp({"headless": args.headless})
 
 import omni.log
-omni.log.set_level(omni.log.Level.ERROR, channel="omni.physx.plugin")
+omni.log.get_log().set_channel_level("omni.physx.plugin", omni.log.Level.ERROR, omni.log.SettingBehavior.OVERRIDE)
 
 import numpy as np
 import torch
