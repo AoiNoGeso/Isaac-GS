@@ -144,7 +144,7 @@ class WandbEpisodeLogger(gym.Wrapper):
         return obs, reward, terminated, truncated, info
 
 
-def build_ppo(obs_space, act_space, cfg):
+def build_ppo(obs_space, act_space, cfg, train_cfg):
     models = {
         "policy": PointNavActor(obs_space, act_space, DEVICE, IMG_SIZE),
         "value": PointNavCritic(obs_space, act_space, DEVICE, IMG_SIZE),
@@ -165,8 +165,8 @@ def build_ppo(obs_space, act_space, cfg):
         experiment={
             "directory": LOG_DIR,
             "experiment_name": "",
-            "write_interval": 1000,
-            "checkpoint_interval": 10_000,
+            "write_interval": train_cfg.log_interval,
+            "checkpoint_interval": train_cfg.checkpoint_interval,
             "wandb": False,
         },
     )
@@ -180,7 +180,7 @@ def build_ppo(obs_space, act_space, cfg):
     )
 
 
-def build_sac(obs_space, act_space, cfg):
+def build_sac(obs_space, act_space, cfg, train_cfg):
     def make_critic():
         return SACPointNavCritic(obs_space, act_space, DEVICE, IMG_SIZE)
 
@@ -209,8 +209,8 @@ def build_sac(obs_space, act_space, cfg):
         experiment={
             "directory": LOG_DIR,
             "experiment_name": "",
-            "write_interval": 1000,
-            "checkpoint_interval": 10_000,
+            "write_interval": train_cfg.log_interval,
+            "checkpoint_interval": train_cfg.checkpoint_interval,
             "wandb": False,
         },
     )
@@ -257,9 +257,9 @@ def main():
     act_space = gym_env.action_space
 
     if train_cfg.algo == "ppo":
-        models, agent = build_ppo(obs_space, act_space, train_cfg.ppo)
+        models, agent = build_ppo(obs_space, act_space, train_cfg.ppo, train_cfg)
     else:
-        models, agent = build_sac(obs_space, act_space, train_cfg.sac)
+        models, agent = build_sac(obs_space, act_space, train_cfg.sac, train_cfg)
 
     if args.checkpoint:
         models["policy"].load(args.checkpoint)
