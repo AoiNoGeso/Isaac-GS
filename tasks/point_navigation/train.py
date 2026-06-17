@@ -53,7 +53,6 @@ from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
 from skrl.trainers.torch import SequentialTrainer
 from skrl.trainers.torch.sequential import SequentialTrainerCfg
-from skrl.utils import set_seed
 
 from envs.gym_wrapper import PointNavGymEnv
 from tasks.point_navigation.config import PointNavEnvCfg, PointNavTrainCfg
@@ -64,15 +63,19 @@ from tasks.point_navigation.policy.network import (
     SACPointNavCritic,
 )
 
-set_seed(42)
-
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 IMG_SIZE = 84
 LOG_DIR = "runs/point_nav"
 
 
+def _grad_norm(param) -> float | None:
+    if param is not None and param.grad is not None:
+        return float(param.grad.norm().item())
+    return None
+
+
 class WandbEpisodeLogger(gym.Wrapper):
-    def __init__(self, env, window: int = 100):
+    def __init__(self, env, window: int = 100, models: dict | None = None):
         super().__init__(env)
         self._ep_reward = 0.0
         self._ep_count = 0
@@ -83,6 +86,7 @@ class WandbEpisodeLogger(gym.Wrapper):
         self._success_buf = []
         self._collision_buf = []
         self._window = window
+        self._models = models or {}
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
@@ -106,6 +110,41 @@ class WandbEpisodeLogger(gym.Wrapper):
             if self._prev_xy is not None:
                 self._ep_path_len += float(np.linalg.norm(xy - self._prev_xy))
             self._prev_xy = xy
+
+        log = {}
+        policy = self._models.get("policy")
+        if policy is not None:
+            try:
+                entropy = policy.get_entropy()
+                if entropy is not None:
+                    log["train/entropy"] = float(entropy.mean())
+            except Exception:
+                pass
+            for name, attr in [("mean_layer", "mean_layer"), ("log_std_layer", "log_std_layer"),
+                                ("log_std_param", "log_std_param")]:
+                layer = getattr(policy, attr, None)
+                if layer is None:
+                    continue
+                param = layer.weight if hasattr(layer, "weight") else layer
+                g = _grad_norm(param)
+                if g is not None:
+                    log[f"grad/policy/{name}"] = g
+
+        for role in ("critic_1", "critic_2", "value"):
+            m = self._models.get(role)
+            if m is None:
+                continue
+            last = None
+            for mod in m.modules():
+                if isinstance(mod, torch.nn.Linear):
+                    last = mod
+            if last is not None:
+                g = _grad_norm(last.weight)
+                if g is not None:
+                    log[f"grad/{role}/output_layer"] = g
+
+        if log:
+            wandb.log(log, step=self._total_steps)
 
         if terminated or truncated:
             self._ep_count += 1
@@ -248,8 +287,6 @@ def main():
     env_cfg.fixed_goal_pos = train_cfg.fixed_goal_pos
 
     gym_env = PointNavGymEnv(cfg=env_cfg)
-    if use_wandb:
-        gym_env = WandbEpisodeLogger(gym_env)
     gym_env.reset()
     env = wrap_env(gym_env)
 
@@ -260,6 +297,10 @@ def main():
         models, agent = build_ppo(obs_space, act_space, train_cfg.ppo, train_cfg)
     else:
         models, agent = build_sac(obs_space, act_space, train_cfg.sac, train_cfg)
+
+    if use_wandb:
+        gym_env = WandbEpisodeLogger(gym_env, models=models)
+        env = wrap_env(gym_env)
 
     if args.checkpoint:
         models["policy"].load(args.checkpoint)

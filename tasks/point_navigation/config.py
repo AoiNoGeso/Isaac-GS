@@ -15,18 +15,20 @@ class PointNavEnvCfg:
 
     physics_dt: float = 1.0 / 60.0
     rendering_dt: float = 1.0 / 30.0
-    decimation: int = 2
+    decimation: int = 6
 
     goal_threshold: float = 0.4  # m
-    min_goal_dist: float = 1.5  # m
+    min_goal_dist: float = 2.5  # m
     max_episode_steps: int = 1000
 
-    w_dist: float = 0.0  # 距離に対する報酬
-    w_collision: float = -20.0  # 衝突に対するペナルティ
-    w_success: float = 50.0  # ゴール到達に対する報酬
-    w_heading: float = 0.0  # cos(angle_rel) に乗じる逐次報酬
-    w_timeout: float = -20.0  # タイムアウトに対するペナルティ
-    w_rollover: float = -20.0  # 転倒に対するペナルティ
+    r_dist: float = 4.0        # 距離短縮に対する報酬係数
+    r_collision: float = -20.0 # 衝突ペナルティ
+    r_success: float = 20.0    # ゴール到達報酬
+    r_heading: float = 0.0     # cos(angle_rel) に乗じる逐次報酬係数
+    r_rollover: float = -20.0  # 転倒ペナルティ
+    r_spin: float = -0.05      # 回転ペナルティ係数（r_spin × ω²）
+    r_time: float = -0.025     # 毎ステップ定数ペナルティ
+    r_timeout: float = 0.0     # タイムアウトペナルティ（r_timeで代替のため0）
 
     navmesh_exit_threshold: float = 0.3  # m
     collision_grace_steps: int = 5
@@ -34,6 +36,7 @@ class PointNavEnvCfg:
 
     fixed_spawn_pos: tuple[float, float, float] | None = None
     fixed_goal_pos: tuple[float, float, float] | None = None
+    random_spawn_yaw: bool = True
 
 
 @dataclass
@@ -62,7 +65,7 @@ class SACCfg:
     learning_starts: int = 3_000
     grad_norm_clip: float = 1.0
     learn_entropy: bool = True
-    initial_entropy_value: float = 0.2
+    initial_entropy_value: float = 1.0
 
 
 @dataclass

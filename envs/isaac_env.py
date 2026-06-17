@@ -2,9 +2,9 @@ import numpy as np
 
 from tasks.point_navigation.config import PointNavEnvCfg
 
-_V_LINEAR_MAX = 1.0   # m/s
+_V_LINEAR_MAX = 1.0  # m/s
 _V_ANGULAR_MAX = 1.0  # rad/s
-_WHEEL_BASE = 0.57    # m
+_WHEEL_BASE = 0.57  # m
 
 
 class PointNavIsaacEnv:
@@ -34,10 +34,13 @@ class PointNavIsaacEnv:
             kit_app.update()
 
         import omni.anim.navigation.core as nav
+
         self._inav = nav.acquire_interface()
 
         add_reference_to_stage(usd_path=self.cfg.stage_path, prim_path="/World/env")
-        add_reference_to_stage(usd_path=self.cfg.robot_usd, prim_path=self.cfg.robot_prim_path)
+        add_reference_to_stage(
+            usd_path=self.cfg.robot_usd, prim_path=self.cfg.robot_prim_path
+        )
 
         self._world = World(
             physics_dt=self.cfg.physics_dt,
@@ -102,7 +105,9 @@ class PointNavIsaacEnv:
         contact_report.CreateThresholdAttr().Set(0)
         contact_authoring = Contact.create(
             f"{chassis_prim_path}/contact_sensor",
-            min_threshold=0.0, max_threshold=100000.0, radius=-1.0,
+            min_threshold=0.0,
+            max_threshold=100000.0,
+            radius=-1.0,
         )
         self._contact_sensor = ContactSensor(contact_authoring)
         self._contact_sensor.add_raw_contact_data_to_frame()
@@ -118,7 +123,10 @@ class PointNavIsaacEnv:
     def _setup_camera_viewport(self):
         try:
             import omni.kit.viewport.utility as vp_util
-            vp_win = vp_util.create_viewport_window("Robot Camera", width=320, height=240)
+
+            vp_win = vp_util.create_viewport_window(
+                "Robot Camera", width=320, height=240
+            )
             vp_win.viewport_api.set_active_camera(self.cfg.camera_prim_path)
             print("[Camera] Robot viewport window created")
         except Exception as e:
@@ -145,6 +153,7 @@ class PointNavIsaacEnv:
 
     def reset(self) -> dict:
         self._step_count = 0
+        self._last_omega = 0.0
 
         if self.cfg.fixed_spawn_pos is not None:
             robot_pos = np.array(self.cfg.fixed_spawn_pos, dtype=np.float32)
@@ -153,7 +162,9 @@ class PointNavIsaacEnv:
 
         if self.cfg.fixed_goal_pos is not None:
             self._goal_pos = np.array(self.cfg.fixed_goal_pos, dtype=np.float32)
-            self._prev_dist = float(np.linalg.norm(self._goal_pos[[0, 1]] - robot_pos[[0, 1]]))
+            self._prev_dist = float(
+                np.linalg.norm(self._goal_pos[[0, 1]] - robot_pos[[0, 1]])
+            )
             if self._prev_dist < self.cfg.min_goal_dist:
                 print(
                     f"[Warning] spawn-goal XY 距離 {self._prev_dist:.2f}m が "
@@ -171,8 +182,14 @@ class PointNavIsaacEnv:
             self._goal_pos = best_goal
             self._prev_dist = best_dist
 
+        spawn_yaw = (
+            float(np.random.uniform(-np.pi, np.pi))
+            if self.cfg.random_spawn_yaw
+            else -np.pi / 2.0
+        )
+
         for _ in range(10):
-            self._teleport_robot(robot_pos)
+            self._teleport_robot(robot_pos, yaw=spawn_yaw)
             self._world.step(render=False)
             if self._check_velocity_explosion():
                 self._recover_physics()
@@ -182,16 +199,17 @@ class PointNavIsaacEnv:
             if not self._check_rollover():
                 break
             robot_pos = self._sample_navmesh_point()
-            self._teleport_robot(robot_pos)
+            self._teleport_robot(robot_pos, yaw=spawn_yaw)
             self._world.step(render=False)
 
-        self._teleport_robot(robot_pos)
+        self._teleport_robot(robot_pos, yaw=spawn_yaw)
         self._world.step(render=True)
         return self._get_obs()
 
     def step(self, action: np.ndarray) -> tuple[dict, float, bool, bool, dict]:
         v_x = float(np.clip(action[0], -1.0, 1.0)) * _V_LINEAR_MAX
         omega = float(np.clip(action[1], -1.0, 1.0)) * _V_ANGULAR_MAX
+        self._last_omega = omega
         v_L = v_x - omega * _WHEEL_BASE / 2.0
         v_R = v_x + omega * _WHEEL_BASE / 2.0
 
@@ -208,12 +226,25 @@ class PointNavIsaacEnv:
                 obs = self._get_obs()
                 pos = self._get_robot_pos()
                 dist = float(np.linalg.norm(self._goal_pos[[0, 1]] - pos[[0, 1]]))
-                return obs, float(self.cfg.w_collision), True, False, {
-                    "success": False, "collision": True, "timeout": False,
-                    "dist": dist, "dist_final": dist, "robot_xz": pos[[0, 1]],
-                }
+                return (
+                    obs,
+                    float(self.cfg.r_collision),
+                    True,
+                    False,
+                    {
+                        "success": False,
+                        "collision": True,
+                        "timeout": False,
+                        "dist": dist,
+                        "dist_final": dist,
+                        "robot_xz": pos[[0, 1]],
+                    },
+                )
 
-            if self._step_count >= self.cfg.collision_grace_steps and self._check_wall_contact():
+            if (
+                self._step_count >= self.cfg.collision_grace_steps
+                and self._check_wall_contact()
+            ):
                 self._robot.set_joint_velocity_targets(
                     velocities=np.zeros((1, self._robot.num_dof), dtype=np.float32)
                 )
@@ -221,10 +252,20 @@ class PointNavIsaacEnv:
                 pos = self._get_robot_pos()
                 dist = float(np.linalg.norm(self._goal_pos[[0, 1]] - pos[[0, 1]]))
                 self._prev_dist = dist
-                return obs, float(self.cfg.w_collision), True, False, {
-                    "success": False, "collision": True, "timeout": False,
-                    "dist": dist, "dist_final": dist, "robot_xz": pos[[0, 1]],
-                }
+                return (
+                    obs,
+                    float(self.cfg.r_collision),
+                    True,
+                    False,
+                    {
+                        "success": False,
+                        "collision": True,
+                        "timeout": False,
+                        "dist": dist,
+                        "dist_final": dist,
+                        "robot_xz": pos[[0, 1]],
+                    },
+                )
 
         self._step_count += 1
         obs = self._get_obs()
@@ -232,13 +273,15 @@ class PointNavIsaacEnv:
         terminated = info["success"] or info["collision"]
         truncated = self._step_count >= self.cfg.max_episode_steps
         if truncated:
-            reward += self.cfg.w_timeout
+            reward += self.cfg.r_timeout
         return obs, float(reward), terminated, truncated, info
 
     def _get_obs(self) -> dict:
         rgb, _ = self._camera.get_rgbd()
-        return {"rgb": (rgb.astype(np.float32) / 255.0).transpose(2, 0, 1),
-                "goal": self._compute_goal_vec()}
+        return {
+            "rgb": (rgb.astype(np.float32) / 255.0).transpose(2, 0, 1),
+            "goal": self._compute_goal_vec(),
+        }
 
     def _compute_goal_vec(self) -> np.ndarray:
         pos = self._get_robot_pos()
@@ -258,12 +301,15 @@ class PointNavIsaacEnv:
         collision = self._check_collision()
         rollover = self._check_rollover()
         angle_rel = float(self._compute_goal_vec()[1]) * np.pi
+        omega = getattr(self, "_last_omega", 0.0)
         reward = (
-            self.cfg.w_dist * (self._prev_dist - cur_dist)
-            + self.cfg.w_heading * float(np.cos(angle_rel))
-            + self.cfg.w_collision * float(collision)
-            + self.cfg.w_rollover * float(rollover)
-            + self.cfg.w_success * float(success)
+            self.cfg.r_dist * (self._prev_dist - cur_dist)
+            + self.cfg.r_heading * float(np.cos(angle_rel))
+            + self.cfg.r_collision * float(collision)
+            + self.cfg.r_rollover * float(rollover)
+            + self.cfg.r_success * float(success)
+            + self.cfg.r_spin * float(omega**2)
+            + self.cfg.r_time
         )
         self._prev_dist = cur_dist
         return reward, {
@@ -296,8 +342,9 @@ class PointNavIsaacEnv:
             if not frame.get("in_contact", False):
                 return False
             for contact in frame.get("contacts", []):
-                if "wall_mesh" in str(contact.get("body0", "")) or \
-                   "wall_mesh" in str(contact.get("body1", "")):
+                if "wall_mesh" in str(contact.get("body0", "")) or "wall_mesh" in str(
+                    contact.get("body1", "")
+                ):
                     return True
         except Exception:
             pass
@@ -313,8 +360,12 @@ class PointNavIsaacEnv:
             return True
         px, py = float(pos[0]), float(pos[1])
         margin = 0.3
-        if (px < self._NM_X_MIN - margin or px > self._NM_X_MAX + margin
-                or py < self._NM_Y_MIN - margin or py > self._NM_Y_MAX + margin):
+        if (
+            px < self._NM_X_MIN - margin
+            or px > self._NM_X_MAX + margin
+            or py < self._NM_Y_MIN - margin
+            or py > self._NM_Y_MAX + margin
+        ):
             return True
         return self._is_out_of_navmesh()
 
@@ -326,11 +377,14 @@ class PointNavIsaacEnv:
 
     def _is_out_of_navmesh(self) -> bool:
         import carb
+
         nm = self._inav.get_navmesh()
         if nm is None:
             return False
         pos = self._get_robot_pos()
-        result = nm.query_closest_point(carb.Float3(float(pos[0]), float(pos[1]), float(pos[2])))
+        result = nm.query_closest_point(
+            carb.Float3(float(pos[0]), float(pos[1]), float(pos[2]))
+        )
         closest = result[0] if isinstance(result, tuple) else result
         if closest is None:
             return True
@@ -338,12 +392,16 @@ class PointNavIsaacEnv:
             cx, cy = float(closest.x), float(closest.y)
         except AttributeError:
             cx, cy = float(closest[0]), float(closest[1])
-        return (cx - float(pos[0]))**2 + (cy - float(pos[1]))**2 > self.cfg.navmesh_exit_threshold**2
+        return (cx - float(pos[0])) ** 2 + (
+            cy - float(pos[1])
+        ) ** 2 > self.cfg.navmesh_exit_threshold**2
 
     _CHASSIS_HALF_HEIGHT = 0.20  # m
 
     def _recover_physics(self):
-        safe_pos = np.array([-0.168, 5.302, self._floor_z + self._CHASSIS_HALF_HEIGHT], dtype=np.float32)
+        safe_pos = np.array(
+            [-0.168, 5.302, self._floor_z + self._CHASSIS_HALF_HEIGHT], dtype=np.float32
+        )
         for _ in range(20):
             self._teleport_robot(safe_pos)
             self._world.step(render=False)
@@ -361,22 +419,40 @@ class PointNavIsaacEnv:
                     return pos
         return np.zeros(3, dtype=np.float32)
 
-    def _teleport_robot(self, pos: np.ndarray):
+    def _teleport_robot(self, pos: np.ndarray, yaw: float | None = None):
+        if yaw is None:
+            yaw = (
+                float(np.random.uniform(-np.pi, np.pi))
+                if self.cfg.random_spawn_yaw
+                else -np.pi / 2.0
+            )
+        half = yaw / 2.0
+        quat = np.array([[np.cos(half), 0.0, 0.0, np.sin(half)]], dtype=np.float32)
         self._robot.set_world_poses(
             positions=np.array([[pos[0], pos[1], pos[2]]], dtype=np.float32),
-            orientations=np.array([[0.7071068, 0.0, 0.0, -0.7071068]], dtype=np.float32),
+            orientations=quat,
         )
-        self._robot.set_joint_velocities(np.zeros((1, self._robot.num_dof), dtype=np.float32))
+        self._robot.set_joint_velocities(
+            np.zeros((1, self._robot.num_dof), dtype=np.float32)
+        )
         self._robot.set_linear_velocities(np.zeros((1, 3), dtype=np.float32))
         self._robot.set_angular_velocities(np.zeros((1, 3), dtype=np.float32))
 
     def _get_robot_pos(self) -> np.ndarray:
         pos, _ = self._robot.get_world_poses()
-        return pos[0].cpu().numpy() if hasattr(pos[0], "cpu") else np.array(pos[0], dtype=np.float32)
+        return (
+            pos[0].cpu().numpy()
+            if hasattr(pos[0], "cpu")
+            else np.array(pos[0], dtype=np.float32)
+        )
 
     def _get_robot_quat(self) -> np.ndarray:
         _, quat = self._robot.get_world_poses()
-        return quat[0].cpu().numpy() if hasattr(quat[0], "cpu") else np.array(quat[0], dtype=np.float32)
+        return (
+            quat[0].cpu().numpy()
+            if hasattr(quat[0], "cpu")
+            else np.array(quat[0], dtype=np.float32)
+        )
 
     def close(self):
         self._world.stop()

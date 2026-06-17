@@ -89,8 +89,8 @@ class SACPointNavActor(GaussianMixin, Model):
         Model.__init__(self, observation_space=observation_space,
                        action_space=action_space, device=device)
         self._img_size = img_size
-        GaussianMixin.__init__(self, clip_actions=True, clip_log_std=True,
-                               min_log_std=-20, max_log_std=2)
+        GaussianMixin.__init__(self, clip_actions=False, clip_log_std=True,
+                               min_log_std=-5, max_log_std=2)
         self.cnn = CNNEncoder(img_size=img_size)
         self.goal = GoalEncoder()
         self.mlp = nn.Sequential(
@@ -109,6 +109,31 @@ class SACPointNavActor(GaussianMixin, Model):
             rgb = obs[:, 2:].view(-1, 3, self._img_size, self._img_size)
         hidden = self.mlp(torch.cat([self.cnn(rgb), self.goal(goal)], dim=1))
         return self.mean_layer(hidden), {"log_std": self.log_std_layer(hidden)}
+
+    def random_act(self, inputs: dict, *, role: str = ""):
+        batch_size = inputs["observations"].shape[0]
+        actions = torch.rand(batch_size, self.num_actions, device=self.device) * 2.0 - 1.0
+        return actions, {}
+
+    def act(self, inputs: dict, *, role: str = ""):
+        mean, outputs = self.compute(inputs, role)
+        log_std = torch.clamp(outputs["log_std"], self._g_min_log_std, self._g_max_log_std)
+        outputs["log_std"] = log_std
+
+        dist = torch.distributions.Normal(mean, log_std.exp())
+        self._g_distribution = dist
+
+        u = dist.rsample()
+        a = torch.tanh(u)
+
+        taken = inputs.get("taken_actions")
+        u_ref = taken if taken is not None else u
+        log_prob = dist.log_prob(u_ref).sum(dim=-1, keepdim=True)
+        log_prob -= torch.log(1 - a.pow(2) + 1e-6).sum(dim=-1, keepdim=True)
+
+        outputs["log_prob"] = log_prob
+        outputs["mean_actions"] = torch.tanh(mean)
+        return a, outputs
 
 
 class SACPointNavCritic(DeterministicMixin, Model):
