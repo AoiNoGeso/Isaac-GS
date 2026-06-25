@@ -11,10 +11,15 @@ class PointNavGymEnv(gym.Env):
         super().__init__()
         self.cfg = cfg or PointNavEnvCfg()
         W, H = self.cfg.camera_resolution
-        self.observation_space = spaces.Dict({
-            "rgb":  spaces.Box(0.0, 1.0, shape=(3, H, W), dtype=np.float32),
-            "goal": spaces.Box(-1.0, 1.0, shape=(2,), dtype=np.float32),
-        })
+
+        obs: dict = {}
+        if self.cfg.input_rgb:
+            obs["rgb"] = spaces.Box(0.0, 1.0, shape=(3, H, W), dtype=np.float32)
+        if self.cfg.input_goal:
+            obs["goal"] = spaces.Box(-1.0, 1.0, shape=(2,), dtype=np.float32)
+        assert obs, "input_rgb と input_goal の少なくとも一方は True にしてください"
+
+        self.observation_space = spaces.Dict(obs)
         self.action_space = spaces.Box(-1.0, 1.0, shape=(2,), dtype=np.float32)
         self._env: PointNavIsaacEnv | None = None
 
@@ -22,13 +27,17 @@ class PointNavGymEnv(gym.Env):
         if self._env is None:
             self._env = PointNavIsaacEnv(self.cfg)
 
+    def _filter_obs(self, obs: dict) -> dict:
+        return {k: obs[k] for k in self.observation_space.spaces}
+
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         super().reset(seed=seed)
         self._lazy_init()
-        return self._env.reset(), {}
+        return self._filter_obs(self._env.reset()), {}
 
     def step(self, action: np.ndarray):
-        return self._env.step(action)
+        obs, reward, terminated, truncated, info = self._env.step(action)
+        return self._filter_obs(obs), reward, terminated, truncated, info
 
     def render(self):
         pass

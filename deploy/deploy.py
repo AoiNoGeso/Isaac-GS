@@ -4,10 +4,15 @@ Point Navigation デプロイスクリプト（ROS2 policy ノード）
 sim_ros2_bridge.py（または実機ドライバ）と組み合わせて使用する。
 RViz2 で '2D Goal Pose' を指定することでゴールを設定できる。
 
+ロボット位置は TF の map→base_link から取得する（SLAM の自己位置推定を使用）。
+ゴール座標は /goal_pose（map フレーム）をそのまま使用するため座標変換不要。
+
 購読トピック:
   /camera/color/image_raw   sensor_msgs/Image
-  /odom                     nav_msgs/Odometry
   /goal_pose                geometry_msgs/PoseStamped
+
+TF 参照:
+  map → base_footprint      SLAM が配信する自己位置推定
 
 発行トピック:
   /cmd_vel                  geometry_msgs/Twist
@@ -30,10 +35,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped, Twist
-from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from stable_baselines3 import SAC
+from tf2_ros import Buffer, TransformListener
+from tasks.point_navigation.policy.policy import SACAgent
 
 # -------------------------------------------------------------------
 # 定数（シミュレータの isaac_env.py と合わせること）
@@ -48,7 +53,7 @@ _GOAL_THRESHOLD = 0.4      # [m]
 
 def _parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--model", required=True, help="SB3 モデルパス (.zip 拡張子不要)")
+    p.add_argument("--model", required=True, help="モデルパス (.pt)")
     p.add_argument("--v-max", type=float, default=_V_MAX)
     p.add_argument("--w-max", type=float, default=_W_MAX)
     p.add_argument("--goal-threshold", type=float, default=_GOAL_THRESHOLD)
@@ -67,8 +72,10 @@ def _compute_goal_vec(
     """
     ロボット位置・向き・ゴール位置から policy への入力ベクトルを計算する。
 
-    シミュレータ（Z-up, ロボット前方=-Y）と同じ計算式を使用:
-      angle_rel = (arctan2(dx, -dy) - yaw + π) % (2π) - π
+    ROS2 標準（Z-up, ロボット前方=+X）の計算式:
+      angle_rel = (arctan2(dy, dx) - yaw + π) % (2π) - π
+
+    シミュレータ（前方=-Y）とは arctan2 の引数が異なる点に注意。
 
     Returns:
         np.ndarray shape (2,): [d_norm, angle_norm]
@@ -79,7 +86,7 @@ def _compute_goal_vec(
     dy = goal_y - robot_y
     dist = math.sqrt(dx ** 2 + dy ** 2)
     d_norm = float(np.clip(dist / _DIST_NORM_SCALE, 0.0, 1.0))
-    angle_rel = (math.atan2(dx, -dy) - robot_yaw + math.pi) % (2 * math.pi) - math.pi
+    angle_rel = (math.atan2(dy, dx) - robot_yaw + math.pi) % (2 * math.pi) - math.pi
     return np.array([d_norm, angle_rel / math.pi], dtype=np.float32)
 
 
@@ -92,7 +99,7 @@ def _quat_to_yaw(x: float, y: float, z: float, w: float) -> float:
 # -------------------------------------------------------------------
 
 class PointNavDeployNode(Node):
-    def __init__(self, model: SAC, args):
+    def __init__(self, model: SACAgent, args):
         super().__init__("point_nav_deploy")
         self._model = model
         self._v_max = args.v_max
@@ -100,16 +107,19 @@ class PointNavDeployNode(Node):
         self._goal_threshold = args.goal_threshold
         self._lock = threading.Lock()
 
+        # TF バッファ（map→base_footprint の自己位置推定を参照）
+        self._tf_buffer   = Buffer()
+        self._tf_listener = TransformListener(self._tf_buffer, self)
+
         # 状態変数
         self._rgb: np.ndarray | None = None           # (3, 84, 84) float32 [0,1]
         self._robot_x: float = 0.0
         self._robot_y: float = 0.0
         self._robot_yaw: float = 0.0
-        self._goal: tuple[float, float] | None = None # (x, y) in odom frame
+        self._goal: tuple[float, float] | None = None # (x, y) in map frame
 
         # サブスクライバ
         self.create_subscription(Image,       "/camera/color/image_raw", self._cb_image, 1)
-        self.create_subscription(Odometry,    "/odom",                   self._cb_odom,  1)
         self.create_subscription(PoseStamped, "/goal_pose",              self._cb_goal,  1)
 
         # パブリッシャ
@@ -150,14 +160,20 @@ class PointNavDeployNode(Node):
         except Exception as e:
             self.get_logger().warn(f"画像受信エラー: {e}")
 
-    def _cb_odom(self, msg: Odometry):
-        """オドメトリからロボット位置・向きを取得する"""
-        p = msg.pose.pose.position
-        q = msg.pose.pose.orientation
-        with self._lock:
-            self._robot_x = p.x
-            self._robot_y = p.y
-            self._robot_yaw = _quat_to_yaw(q.x, q.y, q.z, q.w)
+    def _update_pose_from_tf(self):
+        """TF の map→base_link からロボット位置・向きを更新する"""
+        try:
+            tf = self._tf_buffer.lookup_transform(
+                "map", "base_footprint", rclpy.time.Time()
+            )
+            t = tf.transform.translation
+            q = tf.transform.rotation
+            with self._lock:
+                self._robot_x   = t.x
+                self._robot_y   = t.y
+                self._robot_yaw = _quat_to_yaw(q.x, q.y, q.z, q.w)
+        except Exception:
+            pass  # TF がまだ利用できない場合は前回値を保持
 
     def _cb_goal(self, msg: PoseStamped):
         """RViz2 からゴール位置を受信する"""
@@ -171,6 +187,7 @@ class PointNavDeployNode(Node):
 
     def _cb_control(self):
         """制御周期ごとに policy 推論を行い cmd_vel を発行する"""
+        self._update_pose_from_tf()
         with self._lock:
             rgb = self._rgb
             robot_x, robot_y, robot_yaw = self._robot_x, self._robot_y, self._robot_yaw
@@ -196,10 +213,10 @@ class PointNavDeployNode(Node):
         goal_vec = _compute_goal_vec(robot_x, robot_y, robot_yaw, goal_x, goal_y)
 
         # policy 推論
-        obs = {"rgb": rgb[np.newaxis], "goal": goal_vec[np.newaxis]}
-        action, _ = self._model.predict(obs, deterministic=True)
-        v_x_norm = float(np.clip(action[0][0], -1.0, 1.0))
-        w_norm   = float(np.clip(action[0][1], -1.0, 1.0))
+        obs = {"rgb": rgb, "goal": goal_vec}
+        action = self._model.act(obs, deterministic=True)
+        v_x_norm = float(np.clip(action[0], -1.0, 1.0))
+        w_norm   = float(np.clip(action[1], -1.0, 1.0))
 
         # スケール変換 → cmd_vel 発行
         cmd = Twist()
@@ -217,7 +234,23 @@ class PointNavDeployNode(Node):
 
 def main():
     args = _parse_args()
-    model = SAC.load(args.model)
+
+    import torch
+    from tasks.point_navigation.config import PointNavEnvCfg, SACCfg
+    from tasks.point_navigation.policy.network import PointNavEncoder
+
+    env_cfg = PointNavEnvCfg()
+    img_size = env_cfg.camera_resolution[0]
+    device   = "cuda" if torch.cuda.is_available() else "cpu"
+
+    def encoder_factory():
+        return PointNavEncoder(
+            input_rgb=env_cfg.input_rgb,
+            input_goal=env_cfg.input_goal,
+            img_size=img_size,
+        )
+    model = SACAgent(encoder_factory=encoder_factory, action_dim=2, cfg=SACCfg(), device=device)
+    model.load(args.model)
 
     rclpy.init()
     node = PointNavDeployNode(model, args)

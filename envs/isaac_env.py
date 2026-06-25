@@ -274,6 +274,7 @@ class PointNavIsaacEnv:
         truncated = self._step_count >= self.cfg.max_episode_steps
         if truncated:
             reward += self.cfg.r_timeout
+            info["timeout"] = True
         return obs, float(reward), terminated, truncated, info
 
     def _get_obs(self) -> dict:

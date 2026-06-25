@@ -1,2 +1,2 @@
-from .network import CNNEncoder, GoalEncoder
-from .sb3_policy import PointNavFeaturesExtractor
+from .network import CNNEncoder, GoalEncoder, PointNavEncoder
+from .policy import Actor, Critic, ReplayBuffer, SACAgent
