@@ -56,8 +56,9 @@ class SACCfg(BaseModel):
 class PointNavTrainCfg(BaseModel):
     total_timesteps: int = 300_000
     input_rgb: bool = True
-    input_goal: bool = False
-    run_name: str | None = "PointNav-SAC-RGB"
+    input_goal: bool = True
+    run_name: str | None = "PointNav-SAC-RGB+Goal"
+    log_dir: str = "runs/PointNav-SAC-RGB+Goal_0626"
     log_interval: int = 1_000
-    checkpoint_interval: int = 10_000
+    checkpoint_interval: int = 20_000
     sac: SACCfg = Field(default_factory=SACCfg)

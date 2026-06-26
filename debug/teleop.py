@@ -72,10 +72,15 @@ def main():
         pos = env._get_robot_pos()
         goal = env._goal_pos
         dist_xy = float(np.linalg.norm(goal[[0, 1]] - pos[[0, 1]]))
+        goal_vec = env._compute_goal_vec()
+        angle_rel_deg = float(goal_vec[1]) * 180.0
+        w, qx, qy, qz = env._get_robot_quat()
+        yaw_deg = float(np.degrees(np.arctan2(2.0 * (w * qz + qx * qy), 1.0 - 2.0 * (qy**2 + qz**2))))
         print(
             f"[step {step:4d}] "
-            f"pos=({pos[0]:.2f},{pos[1]:.2f},{pos[2]:.2f})  "
-            f"goal=({goal[0]:.2f},{goal[1]:.2f},{goal[2]:.2f})  "
+            f"pos=({pos[0]:.2f},{pos[1]:.2f})  "
+            f"yaw={yaw_deg:+.1f}deg  "
+            f"angle_rel={angle_rel_deg:+.1f}deg  "
             f"dist_xy={dist_xy:.2f}m  "
             f"collision={int(info.get('collision', False))}",
             end="\r",

@@ -46,8 +46,6 @@ from tasks.point_navigation.policy.network import PointNavEncoder
 from tasks.point_navigation.policy.policy import ReplayBuffer, SACAgent
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-LOG_DIR = "runs/PointNav-RGB"
-CKPT_DIR = f"{LOG_DIR}/checkpoints"
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +139,7 @@ def main():
                 "input_goal": train_cfg.input_goal,
                 **{f"sac/{k}": v for k, v in train_cfg.sac.model_dump().items()},
             },
-            dir=LOG_DIR,
+            dir=train_cfg.log_dir,
         )
 
     # ── 環境 ─────────────────────────────────────────────────────────────
@@ -186,7 +184,9 @@ def main():
         agent.load(args.checkpoint)
 
     # ── 学習ループ ────────────────────────────────────────────────────────
-    Path(CKPT_DIR).mkdir(parents=True, exist_ok=True)
+    log_dir  = train_cfg.log_dir
+    ckpt_dir = f"{log_dir}/checkpoints"
+    Path(ckpt_dir).mkdir(parents=True, exist_ok=True)
     tracker = EpisodeTracker(window=100)
     tracker.reset(obs)
 
@@ -238,12 +238,12 @@ def main():
 
         # チェックポイント保存
         if step % train_cfg.checkpoint_interval == 0:
-            ckpt_path = f"{CKPT_DIR}/sac_{step}.pt"
+            ckpt_path = f"{ckpt_dir}/sac_{step}.pt"
             agent.save(ckpt_path)
             tqdm.write(f"[train] Checkpoint saved: {ckpt_path}", file=_OUT)
 
     # ── 最終保存 ─────────────────────────────────────────────────────────
-    final_path = f"{LOG_DIR}/sac_final.pt"
+    final_path = f"{log_dir}/sac_final.pt"
     agent.save(final_path)
     print(f"[train] Final model saved: {final_path}")
 

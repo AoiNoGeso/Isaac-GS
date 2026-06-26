@@ -72,10 +72,8 @@ def _compute_goal_vec(
     """
     ロボット位置・向き・ゴール位置から policy への入力ベクトルを計算する。
 
-    ROS2 標準（Z-up, ロボット前方=+X）の計算式:
+    ROS2・シミュレータ共通（Z-up, ロボット前方=+X）の計算式:
       angle_rel = (arctan2(dy, dx) - yaw + π) % (2π) - π
-
-    シミュレータ（前方=-Y）とは arctan2 の引数が異なる点に注意。
 
     Returns:
         np.ndarray shape (2,): [d_norm, angle_norm]

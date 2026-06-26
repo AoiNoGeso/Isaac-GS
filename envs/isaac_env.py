@@ -2,8 +2,8 @@ import numpy as np
 
 from tasks.point_navigation.config import PointNavEnvCfg
 
-_V_LINEAR_MAX = 1.0  # m/s
-_V_ANGULAR_MAX = 1.0  # rad/s
+_V_LINEAR_MAX = 0.3  # m/s
+_V_ANGULAR_MAX = 0.3  # rad/s
 _WHEEL_BASE = 0.57  # m
 
 
@@ -292,7 +292,7 @@ class PointNavIsaacEnv:
         dist = float(np.sqrt(dx**2 + dy**2))
         d_norm = float(np.clip(dist / 10.0, 0.0, 1.0))
         yaw = float(np.arctan2(2.0 * (w * qz + qx * qy), 1.0 - 2.0 * (qy**2 + qz**2)))
-        angle_rel = (float(np.arctan2(dx, -dy)) - yaw + np.pi) % (2.0 * np.pi) - np.pi
+        angle_rel = (float(np.arctan2(dy, dx)) - yaw + np.pi) % (2.0 * np.pi) - np.pi
         return np.array([d_norm, float(angle_rel / np.pi)], dtype=np.float32)
 
     def _compute_reward(self) -> tuple[float, dict]:
