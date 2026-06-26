@@ -45,7 +45,6 @@ from tasks.point_navigation.policy.policy import SACAgent
 # -------------------------------------------------------------------
 
 _IMG_SIZE = 84
-_DIST_NORM_SCALE = 10.0    # d_norm = dist / 10.0
 _V_MAX = 0.3               # [m/s]  実機に合わせて調整
 _W_MAX = 1.0               # [rad/s] 実機に合わせて調整
 _GOAL_THRESHOLD = 0.4      # [m]
@@ -76,16 +75,15 @@ def _compute_goal_vec(
       angle_rel = (arctan2(dy, dx) - yaw + π) % (2π) - π
 
     Returns:
-        np.ndarray shape (2,): [d_norm, angle_norm]
-          d_norm    = clip(dist / 10.0, 0, 1)
+        np.ndarray shape (2,): [dist_m, angle_norm]
+          dist_m     = ゴールまでの距離 [m]（正規化なし）
           angle_norm = angle_rel / π  ∈ [-1, 1]
     """
     dx = goal_x - robot_x
     dy = goal_y - robot_y
     dist = math.sqrt(dx ** 2 + dy ** 2)
-    d_norm = float(np.clip(dist / _DIST_NORM_SCALE, 0.0, 1.0))
     angle_rel = (math.atan2(dy, dx) - robot_yaw + math.pi) % (2 * math.pi) - math.pi
-    return np.array([d_norm, angle_rel / math.pi], dtype=np.float32)
+    return np.array([dist, angle_rel / math.pi], dtype=np.float32)
 
 
 def _quat_to_yaw(x: float, y: float, z: float, w: float) -> float:

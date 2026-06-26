@@ -52,8 +52,7 @@ Isaac-GS/
 │           ├── network.py      # CNNEncoder / GoalEncoder / PointNavEncoder
 │           └── policy.py       # SAC (ReplayBuffer / Actor / Critic / SACAgent)
 ├── deploy/
-│   ├── sim_ros2_bridge.py      # Isaac Sim 内 ROS2 ブリッジ
-│   └── deploy.py              # 実機・シミュレータ共通 policy 推論ノード
+│   └── deploy.py              # 実機 policy 推論ノード (ROS2)
 ├── debug/
 │   └── teleop.py               # WASD テレオペ
 └── runs/                       # 学習ログ・チェックポイント
@@ -125,28 +124,19 @@ python stage_generation/compose_stage.py -i stages/corridor1
 
 ```bash
 # 学習開始
-python tasks/point_navigation/train.py --headless
+python tasks/point_navigation/train.py
 
 # 実験名を指定
 python tasks/point_navigation/train.py --headless --run-name my_run
 
-# チェックポイントから再開
+# チェックポイントから再開（パスは config.py の PointNavTrainCfg.log_dir に依存）
 python tasks/point_navigation/train.py \
-    --headless --checkpoint runs/point_nav/checkpoints/sac_10000.pt
+    --headless --checkpoint runs/PointNav-SAC-RGB/checkpoints/sac_10000.pt
 
 # wandb なし
 python tasks/point_navigation/train.py --headless --no-wandb
 ```
 
-### 5. シミュレータでのデプロイ (ROS2)
-
-```bash
-# ターミナル 1: Isaac Sim ROS2 ブリッジ起動
-python deploy/sim_ros2_bridge.py
-
-# ターミナル 2: policy 推論ノード起動
-python deploy/deploy.py --model runs/point_nav/sac_final.pt
-```
 
 ## デバッグ
 
@@ -171,7 +161,7 @@ python debug/teleop.py
 | 観測 | RGB 84×84 px / ゴールベクトル (2,) / 両方 (`config.py` で切替) |
 | 行動 | [v_x_norm, ω_z_norm] (ユニサイクルモデル) |
 | 衝突判定 | ContactSensor (Newton エンジン) による wall_mesh 接触検出 |
-| 座標系 | Z-up |
+| 座標系 | Z-up、ロボット前方 = +X |
 
 ## 注意事項
 

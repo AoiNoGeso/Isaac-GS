@@ -25,7 +25,7 @@ class PointNavEnvCfg(BaseModel):
 
     r_dist: float = 4.0  # 距離短縮に対する報酬係数
     r_collision: float = -20.0  # 衝突ペナルティ
-    r_success: float = 20.0  # ゴール到達報酬
+    r_success: float = 100.0  # ゴール到達報酬
     r_heading: float = 0.0  # cos(angle_rel) に乗じる逐次報酬係数
     r_rollover: float = -20.0  # 転倒ペナルティ
     r_spin: float = -0.05  # 回転ペナルティ係数（r_spin × ω²）
@@ -54,11 +54,11 @@ class SACCfg(BaseModel):
 
 
 class PointNavTrainCfg(BaseModel):
-    total_timesteps: int = 300_000
+    total_timesteps: int = 500_000
     input_rgb: bool = True
     input_goal: bool = True
-    run_name: str | None = "PointNav-SAC-RGB+Goal"
-    log_dir: str = "runs/PointNav-SAC-RGB+Goal_0626"
+    run_name: str | None = "P-RGB+G_0626"
+    log_dir: str = "runs/PointNav-RGB+Goal/0626"
     log_interval: int = 1_000
     checkpoint_interval: int = 20_000
     sac: SACCfg = Field(default_factory=SACCfg)

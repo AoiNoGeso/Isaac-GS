@@ -83,7 +83,7 @@ class EpisodeTracker:
         self._ep_path_len = 0.0
         self._prev_xy = None
         if "goal" in obs:
-            self._ep_init_dist = float(obs["goal"][0]) * 10.0  # d_norm → m
+            self._ep_init_dist = float(obs["goal"][0])  # dist [m]
 
     def finish(self, info: dict) -> dict:
         self._ep_count += 1

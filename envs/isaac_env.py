@@ -290,10 +290,9 @@ class PointNavIsaacEnv:
         dx = self._goal_pos[0] - pos[0]
         dy = self._goal_pos[1] - pos[1]
         dist = float(np.sqrt(dx**2 + dy**2))
-        d_norm = float(np.clip(dist / 10.0, 0.0, 1.0))
         yaw = float(np.arctan2(2.0 * (w * qz + qx * qy), 1.0 - 2.0 * (qy**2 + qz**2)))
         angle_rel = (float(np.arctan2(dy, dx)) - yaw + np.pi) % (2.0 * np.pi) - np.pi
-        return np.array([d_norm, float(angle_rel / np.pi)], dtype=np.float32)
+        return np.array([dist, float(angle_rel / np.pi)], dtype=np.float32)
 
     def _compute_reward(self) -> tuple[float, dict]:
         pos = self._get_robot_pos()
