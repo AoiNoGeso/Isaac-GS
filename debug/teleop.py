@@ -12,9 +12,11 @@ import sys
 from pathlib import Path
 
 from isaacsim import SimulationApp
+
 app = SimulationApp({"headless": False})
 
 import omni.log
+
 omni.log.get_log().set_channel_level(
     "omni.physx.plugin", omni.log.Level.ERROR, omni.log.SettingBehavior.OVERRIDE
 )
@@ -25,14 +27,14 @@ import omni.appwindow
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from envs.isaac_env import PointNavIsaacEnv, _V_LINEAR_MAX, _V_ANGULAR_MAX
+from envs.isaac_env import _V_ANGULAR_MAX, _V_LINEAR_MAX, PointNavIsaacEnv
 from tasks.point_navigation.config import PointNavEnvCfg
 
 
 def main():
     cfg = PointNavEnvCfg()
-    cfg.fixed_spawn_pos = (0.4, 1.4, -1.0)
-    cfg.fixed_goal_pos = (-0.3, -3.4, -0.8)
+    cfg.fixed_spawn_pos = (0.9, -0.19, -2.6)
+    cfg.fixed_goal_pos = (-3.0, 1.6, -2.6)
     env = PointNavIsaacEnv(cfg)
     env.reset()
 
@@ -60,10 +62,20 @@ def main():
             p = env._get_robot_pos()
             print(f"\n[Pos] ({p[0]:.4f}, {p[1]:.4f}, {p[2]:.4f})")
 
-        v_x = (1.0 if carb.input.KeyboardInput.W in keys_pressed
-                else -1.0 if carb.input.KeyboardInput.S in keys_pressed else 0.0) * _V_LINEAR_MAX
-        omega = (1.0 if carb.input.KeyboardInput.A in keys_pressed
-                 else -1.0 if carb.input.KeyboardInput.D in keys_pressed else 0.0) * _V_ANGULAR_MAX
+        v_x = (
+            1.0
+            if carb.input.KeyboardInput.W in keys_pressed
+            else -1.0
+            if carb.input.KeyboardInput.S in keys_pressed
+            else 0.0
+        ) * _V_LINEAR_MAX
+        omega = (
+            1.0
+            if carb.input.KeyboardInput.A in keys_pressed
+            else -1.0
+            if carb.input.KeyboardInput.D in keys_pressed
+            else 0.0
+        ) * _V_ANGULAR_MAX
 
         obs, reward, terminated, truncated, info = env.step(
             np.array([v_x / _V_LINEAR_MAX, omega / _V_ANGULAR_MAX], dtype=np.float32)
@@ -75,7 +87,11 @@ def main():
         goal_vec = env._compute_goal_vec()
         angle_rel_deg = float(goal_vec[1]) * 180.0
         w, qx, qy, qz = env._get_robot_quat()
-        yaw_deg = float(np.degrees(np.arctan2(2.0 * (w * qz + qx * qy), 1.0 - 2.0 * (qy**2 + qz**2))))
+        yaw_deg = float(
+            np.degrees(
+                np.arctan2(2.0 * (w * qz + qx * qy), 1.0 - 2.0 * (qy**2 + qz**2))
+            )
+        )
         print(
             f"[step {step:4d}] "
             f"pos=({pos[0]:.2f},{pos[1]:.2f})  "

@@ -182,11 +182,10 @@ class PointNavIsaacEnv:
             self._goal_pos = best_goal
             self._prev_dist = best_dist
 
-        spawn_yaw = (
-            float(np.random.uniform(-np.pi, np.pi))
-            if self.cfg.random_spawn_yaw
-            else -np.pi / 2.0
-        )
+        if self.cfg.fixed_spawn_yaw_deg is not None:
+            spawn_yaw = float(np.radians(self.cfg.fixed_spawn_yaw_deg))
+        else:
+            spawn_yaw = float(np.random.uniform(-np.pi, np.pi))
 
         for _ in range(10):
             self._teleport_robot(robot_pos, yaw=spawn_yaw)
@@ -421,11 +420,10 @@ class PointNavIsaacEnv:
 
     def _teleport_robot(self, pos: np.ndarray, yaw: float | None = None):
         if yaw is None:
-            yaw = (
-                float(np.random.uniform(-np.pi, np.pi))
-                if self.cfg.random_spawn_yaw
-                else -np.pi / 2.0
-            )
+            if self.cfg.fixed_spawn_yaw_deg is not None:
+                yaw = float(np.radians(self.cfg.fixed_spawn_yaw_deg))
+            else:
+                yaw = float(np.random.uniform(-np.pi, np.pi))
         half = yaw / 2.0
         quat = np.array([[np.cos(half), 0.0, 0.0, np.sin(half)]], dtype=np.float32)
         self._robot.set_world_poses(

@@ -136,16 +136,19 @@ def main():
         f"max=({bmax[0]:.2f},{bmax[1]:.2f},{bmax[2]:.2f})"
     )
 
-    MARGIN_XZ = 3.0
-    MARGIN_Y_BOT = 2.0
-    MARGIN_Y_TOP = 5.0
+    # Z-up 座標系: X/Y が水平、Z が垂直
+    MARGIN_XY = 3.0    # 水平方向マージン（X・Y）
+    MARGIN_Z_BOT = 2.0  # 床下方向マージン
+    MARGIN_Z_TOP = 5.0  # 天井上方向マージン
+
+    # スケール = ボリュームの全辺長（extent が ±0.5 のため scale がそのまま辺長）
+    sx = (bmax[0] - bmin[0]) + MARGIN_XY * 2   # 水平 X
+    sy = (bmax[1] - bmin[1]) + MARGIN_XY * 2   # 水平 Y
+    sz = (bmax[2] - bmin[2]) + MARGIN_Z_BOT + MARGIN_Z_TOP  # 垂直 Z
 
     cx = (bmin[0] + bmax[0]) / 2.0
     cy = (bmin[1] + bmax[1]) / 2.0
-    cz = (bmin[2] + bmax[2]) / 2.0
-    sx = (bmax[0] - bmin[0]) / 2.0 + MARGIN_XZ
-    sy = (bmax[1] - bmin[1]) / 2.0 + (MARGIN_Y_BOT + MARGIN_Y_TOP) / 2.0
-    sz = (bmax[2] - bmin[2]) + MARGIN_XZ * 2
+    cz = (bmin[2] + bmax[2]) / 2.0 + (MARGIN_Z_TOP - MARGIN_Z_BOT) / 2.0
 
     vol_prim = active_stage.DefinePrim("/env/NavMeshVolume", "NavMeshVolume")
     vol_prim.CreateAttribute("nav:area", Sdf.ValueTypeNames.Token).Set("Walkable")

@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 
 
 class PointNavEnvCfg(BaseModel):
-    stage_path: str = "sample_data/stages/corridor1_2d/stage.usda"
+    stage_path: str = "sample_data/stages/room1/stage.usda"
     robot_usd: str = (
         "https://omniverse-content-production.s3-us-west-2.amazonaws.com"
         "/Assets/Isaac/6.0/Isaac/Robots/NVIDIA/Carter/carter_v1.usd"
@@ -25,7 +25,7 @@ class PointNavEnvCfg(BaseModel):
 
     r_dist: float = 4.0  # 距離短縮に対する報酬係数
     r_collision: float = -20.0  # 衝突ペナルティ
-    r_success: float = 100.0  # ゴール到達報酬
+    r_success: float = 50.0  # ゴール到達報酬
     r_heading: float = 0.0  # cos(angle_rel) に乗じる逐次報酬係数
     r_rollover: float = -20.0  # 転倒ペナルティ
     r_spin: float = -0.05  # 回転ペナルティ係数（r_spin × ω²）
@@ -36,9 +36,14 @@ class PointNavEnvCfg(BaseModel):
     collision_grace_steps: int = 5
     rollover_threshold: float = -0.7  # up_z < この値で転倒判定
 
-    fixed_spawn_pos: tuple[float, float, float] | None = (0.4, 1.4, -1.0)
-    fixed_goal_pos: tuple[float, float, float] | None = (-0.3, -3.4, -0.8)
-    random_spawn_yaw: bool = False
+    # corridor1_2d
+    # fixed_spawn_pos: tuple[float, float, float] | None = (0.4, 1.4, -1.0)
+    # fixed_goal_pos: tuple[float, float, float] | None = (-0.1, -1.3, -0.8)
+    # room1
+    fixed_spawn_pos: tuple[float, float, float] | None = (0.9, -0.19, -2.6)
+    fixed_goal_pos: tuple[float, float, float] | None = (-3.0, 1.6, -2.6)
+    # None でランダム、値（度）を指定で固定 (corridor1_2d: -90, room1: 137)
+    fixed_spawn_yaw_deg: float | None = 137
 
 
 class SACCfg(BaseModel):
@@ -57,8 +62,8 @@ class PointNavTrainCfg(BaseModel):
     total_timesteps: int = 500_000
     input_rgb: bool = True
     input_goal: bool = True
-    run_name: str | None = "P-RGB+G_0626"
-    log_dir: str = "runs/PointNav-RGB+Goal/0626"
+    run_name: str | None = "P-RGB+G_0627_room1"
+    log_dir: str = "runs/PointNav-RGB+Goal/0627_room1"
     log_interval: int = 1_000
     checkpoint_interval: int = 20_000
     sac: SACCfg = Field(default_factory=SACCfg)

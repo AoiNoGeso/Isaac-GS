@@ -140,8 +140,10 @@ class Critic(nn.Module):
         def _mlp():
             return nn.Sequential(
                 nn.Linear(feat_dim + action_dim, hidden),
+                nn.LayerNorm(hidden),
                 nn.ReLU(),
                 nn.Linear(hidden, hidden),
+                nn.LayerNorm(hidden),
                 nn.ReLU(),
                 nn.Linear(hidden, 1),
             )

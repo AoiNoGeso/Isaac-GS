@@ -46,8 +46,9 @@ Isaac-GS/
 │       └── camera_sensor.py    # RGB カメラセンサ
 ├── tasks/
 │   └── point_navigation/
-│       ├── config.py           # 環境・報酬・学習設定 (Pydantic)
+│       ├── config.py           # 環境・報酬・学習設定
 │       ├── train.py            # 学習スクリプト (SAC)
+│       ├── test.py             # 評価スクリプト
 │       └── policy/
 │           ├── network.py      # CNNEncoder / GoalEncoder / PointNavEncoder
 │           └── policy.py       # SAC (ReplayBuffer / Actor / Critic / SACAgent)
@@ -137,6 +138,50 @@ python tasks/point_navigation/train.py \
 python tasks/point_navigation/train.py --headless --no-wandb
 ```
 
+
+## テスト / 評価
+
+学習済みモデルを評価します。ステージと評価設定は `test.py` 冒頭の `TestCfg` で定義します。
+
+```bash
+# 単一ステージ（index 0）
+python tasks/point_navigation/test.py \
+    --model runs/PointNav-RGB+Goal/0627/sac_final.pt \
+    --stage-index 0 \
+    --headless
+```
+
+複数ステージを評価する場合はステージ数分だけ別プロセスで実行します（Isaac Sim の制約）:
+
+```bash
+for i in 0 1; do
+  python tasks/point_navigation/test.py \
+      --model runs/PointNav-RGB+Goal/0627/sac_final.pt \
+      --stage-index $i \
+      --headless
+done
+```
+
+| 引数 | 説明 |
+|---|---|
+| `--model` | チェックポイントパス（省略時は `TestCfg.model_path`） |
+| `--stage-index` | 評価するステージのインデックス（デフォルト 0） |
+| `--headless` | ヘッドレス実行 |
+
+出力例:
+```
+============================================================
+Stage 0: sample_data/stages/room1/stage.usda
+============================================================
+Episodes      : 100
+Success Rate  : 0.720  (72/100)
+Collision Rate: 0.150  (15/100)
+Timeout Rate  : 0.130  (13/100)
+Avg Reward    : 45.32
+Avg Dist Final: 0.381 m
+SPL           : 0.613
+============================================================
+```
 
 ## デバッグ
 
