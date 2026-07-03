@@ -95,12 +95,13 @@ def _quat_to_yaw(x: float, y: float, z: float, w: float) -> float:
 # -------------------------------------------------------------------
 
 class PointNavDeployNode(Node):
-    def __init__(self, model: SACAgent, args):
+    def __init__(self, model: SACAgent, args, input_goal: bool = True):
         super().__init__("point_nav_deploy")
         self._model = model
         self._v_max = args.v_max
         self._w_max = args.w_max
         self._goal_threshold = args.goal_threshold
+        self._input_goal = input_goal
         self._lock = threading.Lock()
 
         # TF バッファ（map→base_footprint の自己位置推定を参照）
@@ -208,8 +209,10 @@ class PointNavDeployNode(Node):
         # ゴールベクトル計算
         goal_vec = _compute_goal_vec(robot_x, robot_y, robot_yaw, goal_x, goal_y)
 
-        # policy 推論
-        obs = {"rgb": rgb, "goal": goal_vec}
+        # policy 推論（input_goal=False の場合は "goal" キーを含めない）
+        obs = {"rgb": rgb}
+        if self._input_goal:
+            obs["goal"] = goal_vec
         action = self._model.act(obs, deterministic=True)
         v_x_norm = float(np.clip(action[0], -1.0, 1.0))
         w_norm   = float(np.clip(action[1], -1.0, 1.0))
@@ -249,7 +252,7 @@ def main():
     model.load(args.model)
 
     rclpy.init()
-    node = PointNavDeployNode(model, args)
+    node = PointNavDeployNode(model, args, input_goal=env_cfg.input_goal)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
