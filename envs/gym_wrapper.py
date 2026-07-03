@@ -33,7 +33,9 @@ class PointNavGymEnv(gym.Env):
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         super().reset(seed=seed)
         self._lazy_init()
-        return self._filter_obs(self._env.reset()), {}
+        obs = self._env.reset()
+        info = {"dist": float(self._env._prev_dist)}
+        return self._filter_obs(obs), info
 
     def step(self, action: np.ndarray):
         obs, reward, terminated, truncated, info = self._env.step(action)

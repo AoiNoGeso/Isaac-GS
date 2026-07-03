@@ -77,13 +77,15 @@ class EpisodeTracker:
                 self._ep_path_len += float(np.linalg.norm(xy - self._prev_xy))
             self._prev_xy = xy
 
-    def reset(self, obs: dict):
+    def reset(self, obs: dict, info: dict | None = None):
         self._ep_reward = 0.0
         self._ep_steps = 0
         self._ep_path_len = 0.0
         self._prev_xy = None
         if "goal" in obs:
             self._ep_init_dist = float(obs["goal"][0])  # dist [m]
+        elif info is not None and "dist" in info:
+            self._ep_init_dist = float(info["dist"])    # input_goal=False 時のフォールバック
 
     def finish(self, info: dict) -> dict:
         self._ep_count += 1
@@ -224,8 +226,8 @@ def main():
             )
             if use_wandb:
                 wandb.log(ep_metrics, step=step)
-            obs, _ = env.reset()
-            tracker.reset(obs)
+            obs, reset_info = env.reset()
+            tracker.reset(obs, reset_info)
 
         # 学習ステップ
         if (

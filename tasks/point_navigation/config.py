@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 
 
 class PointNavEnvCfg(BaseModel):
-    stage_path: str = "sample_data/stages/room1/stage.usda"
+    stage_path: str = "sample_data/stages/corridor1_2d/stage.usda"
     robot_usd: str = (
         "https://omniverse-content-production.s3-us-west-2.amazonaws.com"
         "/Assets/Isaac/6.0/Isaac/Robots/NVIDIA/Carter/carter_v1.usd"
@@ -37,13 +37,13 @@ class PointNavEnvCfg(BaseModel):
     rollover_threshold: float = -0.7  # up_z < この値で転倒判定
 
     # corridor1_2d
-    # fixed_spawn_pos: tuple[float, float, float] | None = (0.4, 1.4, -1.0)
-    # fixed_goal_pos: tuple[float, float, float] | None = (-0.1, -1.3, -0.8)
+    fixed_spawn_pos: tuple[float, float, float] | None = (0.4, 1.4, -1.0)
+    fixed_goal_pos: tuple[float, float, float] | None = (-0.1, -1.3, -0.8)
     # room1
-    fixed_spawn_pos: tuple[float, float, float] | None = (0.9, -0.19, -2.6)
-    fixed_goal_pos: tuple[float, float, float] | None = (-3.0, 1.6, -2.6)
+    # fixed_spawn_pos: tuple[float, float, float] | None = (0.9, -0.19, -2.6)
+    # fixed_goal_pos: tuple[float, float, float] | None = (-3.0, 1.6, -2.6)
     # None でランダム、値（度）を指定で固定 (corridor1_2d: -90, room1: 137)
-    fixed_spawn_yaw_deg: float | None = 137
+    fixed_spawn_yaw_deg: float | None = -90
 
 
 class SACCfg(BaseModel):
@@ -61,9 +61,9 @@ class SACCfg(BaseModel):
 class PointNavTrainCfg(BaseModel):
     total_timesteps: int = 500_000
     input_rgb: bool = True
-    input_goal: bool = True
-    run_name: str | None = "P-RGB+G_0627_room1"
-    log_dir: str = "runs/PointNav-RGB+Goal/0627_room1"
+    input_goal: bool = False
+    run_name: str | None = "P-RGB_corridor1_0702"
+    log_dir: str = "runs/PointNav-RGB/corridor1/0702"
     log_interval: int = 1_000
     checkpoint_interval: int = 20_000
     sac: SACCfg = Field(default_factory=SACCfg)
