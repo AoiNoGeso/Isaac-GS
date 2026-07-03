@@ -13,7 +13,7 @@ class PointNavEnvCfg(BaseModel):
     show_camera_viewport: bool = True
 
     input_rgb: bool = True  # RGB 画像をエンコーダに入力する
-    input_goal: bool = True  # ゴールベクトルをエンコーダに入力する
+    input_goal: bool = False  # ゴールベクトルをエンコーダに入力する
 
     physics_dt: float = 1.0 / 60.0
     rendering_dt: float = 1.0 / 30.0

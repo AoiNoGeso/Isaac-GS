@@ -8,7 +8,7 @@ RViz2 で '2D Goal Pose' を指定することでゴールを設定できる。
 ゴール座標は /goal_pose（map フレーム）をそのまま使用するため座標変換不要。
 
 購読トピック:
-  /camera/color/image_raw   sensor_msgs/Image
+  /camera/camera/color/image_raw   sensor_msgs/Image
   /goal_pose                geometry_msgs/PoseStamped
 
 TF 参照:
@@ -25,9 +25,8 @@ TF 参照:
 
 import argparse
 import math
-import threading
-
 import sys
+import threading
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -38,6 +37,7 @@ from geometry_msgs.msg import PoseStamped, Twist
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from tf2_ros import Buffer, TransformListener
+
 from tasks.point_navigation.policy.policy import SACAgent
 
 # -------------------------------------------------------------------
@@ -45,9 +45,9 @@ from tasks.point_navigation.policy.policy import SACAgent
 # -------------------------------------------------------------------
 
 _IMG_SIZE = 84
-_V_MAX = 0.3               # [m/s]  実機に合わせて調整
-_W_MAX = 1.0               # [rad/s] 実機に合わせて調整
-_GOAL_THRESHOLD = 0.4      # [m]
+_V_MAX = 0.3  # [m/s]  実機に合わせて調整
+_W_MAX = 1.0  # [rad/s] 実機に合わせて調整
+_GOAL_THRESHOLD = 0.4  # [m]
 
 
 def _parse_args():
@@ -57,6 +57,8 @@ def _parse_args():
     p.add_argument("--w-max", type=float, default=_W_MAX)
     p.add_argument("--goal-threshold", type=float, default=_GOAL_THRESHOLD)
     p.add_argument("--hz", type=float, default=10.0, help="制御周期 [Hz]")
+    p.add_argument("--input-goal", action="store_true", default=False,
+                   help="ゴールベクトルを観測に含める（RGB+Goalモデル用）")
     return p.parse_args()
 
 
@@ -64,9 +66,13 @@ def _parse_args():
 # ゴールベクトル計算（isaac_env.py の _compute_goal_vec と同一ロジック）
 # -------------------------------------------------------------------
 
+
 def _compute_goal_vec(
-    robot_x: float, robot_y: float, robot_yaw: float,
-    goal_x: float, goal_y: float,
+    robot_x: float,
+    robot_y: float,
+    robot_yaw: float,
+    goal_x: float,
+    goal_y: float,
 ) -> np.ndarray:
     """
     ロボット位置・向き・ゴール位置から policy への入力ベクトルを計算する。
@@ -81,7 +87,7 @@ def _compute_goal_vec(
     """
     dx = goal_x - robot_x
     dy = goal_y - robot_y
-    dist = math.sqrt(dx ** 2 + dy ** 2)
+    dist = math.sqrt(dx**2 + dy**2)
     angle_rel = (math.atan2(dy, dx) - robot_yaw + math.pi) % (2 * math.pi) - math.pi
     return np.array([dist, angle_rel / math.pi], dtype=np.float32)
 
@@ -94,6 +100,7 @@ def _quat_to_yaw(x: float, y: float, z: float, w: float) -> float:
 # ROS2 ノード
 # -------------------------------------------------------------------
 
+
 class PointNavDeployNode(Node):
     def __init__(self, model: SACAgent, args, input_goal: bool = True):
         super().__init__("point_nav_deploy")
@@ -105,19 +112,21 @@ class PointNavDeployNode(Node):
         self._lock = threading.Lock()
 
         # TF バッファ（map→base_footprint の自己位置推定を参照）
-        self._tf_buffer   = Buffer()
+        self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
 
         # 状態変数
-        self._rgb: np.ndarray | None = None           # (3, 84, 84) float32 [0,1]
+        self._rgb: np.ndarray | None = None  # (3, 84, 84) float32 [0,1]
         self._robot_x: float = 0.0
         self._robot_y: float = 0.0
         self._robot_yaw: float = 0.0
-        self._goal: tuple[float, float] | None = None # (x, y) in map frame
+        self._goal: tuple[float, float] | None = None  # (x, y) in map frame
 
         # サブスクライバ
-        self.create_subscription(Image,       "/camera/color/image_raw", self._cb_image, 1)
-        self.create_subscription(PoseStamped, "/goal_pose",              self._cb_goal,  1)
+        self.create_subscription(
+            Image, "/camera/camera/color/image_raw", self._cb_image, 1
+        )
+        self.create_subscription(PoseStamped, "/goal_pose", self._cb_goal, 1)
 
         # パブリッシャ
         self._pub_cmd = self.create_publisher(Twist, "/cmd_vel", 1)
@@ -126,7 +135,9 @@ class PointNavDeployNode(Node):
         self.create_timer(1.0 / args.hz, self._cb_control)
 
         self.get_logger().info(f"モデルロード完了: {args.model}")
-        self.get_logger().info("'/goal_pose' トピックでゴールを指定してください (RViz2 '2D Goal Pose')")
+        self.get_logger().info(
+            "'/goal_pose' トピックでゴールを指定してください (RViz2 '2D Goal Pose')"
+        )
 
     # ── コールバック ────────────────────────────────────────────────
 
@@ -135,7 +146,9 @@ class PointNavDeployNode(Node):
         try:
             # sensor_msgs/Image → numpy (H, W, C)
             dtype = np.uint8
-            raw = np.frombuffer(msg.data, dtype=dtype).reshape(msg.height, msg.width, -1)
+            raw = np.frombuffer(msg.data, dtype=dtype).reshape(
+                msg.height, msg.width, -1
+            )
             # encoding に応じて RGB に変換
             if msg.encoding in ("rgb8",):
                 rgb = raw[..., :3]
@@ -150,6 +163,7 @@ class PointNavDeployNode(Node):
             # 84×84 にリサイズ（NumPy のみ、バイリニア近似）
             if rgb.shape[0] != _IMG_SIZE or rgb.shape[1] != _IMG_SIZE:
                 from PIL import Image as PILImage
+
                 rgb = np.array(PILImage.fromarray(rgb).resize((_IMG_SIZE, _IMG_SIZE)))
             arr = (rgb.astype(np.float32) / 255.0).transpose(2, 0, 1)  # (3,84,84)
             with self._lock:
@@ -166,8 +180,8 @@ class PointNavDeployNode(Node):
             t = tf.transform.translation
             q = tf.transform.rotation
             with self._lock:
-                self._robot_x   = t.x
-                self._robot_y   = t.y
+                self._robot_x = t.x
+                self._robot_y = t.y
                 self._robot_yaw = _quat_to_yaw(q.x, q.y, q.z, q.w)
         except Exception:
             pass  # TF がまだ利用できない場合は前回値を保持
@@ -215,12 +229,12 @@ class PointNavDeployNode(Node):
             obs["goal"] = goal_vec
         action = self._model.act(obs, deterministic=True)
         v_x_norm = float(np.clip(action[0], -1.0, 1.0))
-        w_norm   = float(np.clip(action[1], -1.0, 1.0))
+        w_norm = float(np.clip(action[1], -1.0, 1.0))
 
         # スケール変換 → cmd_vel 発行
         cmd = Twist()
-        cmd.linear.x  = v_x_norm * self._v_max
-        cmd.angular.z = w_norm   * self._w_max
+        cmd.linear.x = v_x_norm * self._v_max
+        cmd.angular.z = w_norm * self._w_max
         self._pub_cmd.publish(cmd)
 
     def _publish_stop(self):
@@ -231,28 +245,34 @@ class PointNavDeployNode(Node):
 # エントリポイント
 # -------------------------------------------------------------------
 
+
 def main():
     args = _parse_args()
 
     import torch
+
     from tasks.point_navigation.config import PointNavEnvCfg, SACCfg
     from tasks.point_navigation.policy.network import PointNavEncoder
 
-    env_cfg = PointNavEnvCfg()
+    input_goal = args.input_goal
+    env_cfg = PointNavEnvCfg(input_goal=input_goal)
     img_size = env_cfg.camera_resolution[0]
-    device   = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     def encoder_factory():
         return PointNavEncoder(
             input_rgb=env_cfg.input_rgb,
-            input_goal=env_cfg.input_goal,
+            input_goal=input_goal,
             img_size=img_size,
         )
-    model = SACAgent(encoder_factory=encoder_factory, action_dim=2, cfg=SACCfg(), device=device)
+
+    model = SACAgent(
+        encoder_factory=encoder_factory, action_dim=2, cfg=SACCfg(), device=device
+    )
     model.load(args.model)
 
     rclpy.init()
-    node = PointNavDeployNode(model, args, input_goal=env_cfg.input_goal)
+    node = PointNavDeployNode(model, args, input_goal=input_goal)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
