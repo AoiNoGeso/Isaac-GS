@@ -5,6 +5,7 @@ IsaacSim 6.0 + 学習済み SAC モデルで deterministic 評価を行う
 実行方法:
   cd ~/Programs/Isaac-GS
   uv run tasks/point_navigation/test.py --model runs/PointNav-RGB+Goal/0626/sac_final.pt --stage-index 0 --headless
+  uv run tasks/point_navigation/test.py --model path/to/sac_final.pt --stage-index 0 --num-humans 2 --headless
 
 複数ステージを評価する場合はステージ数分だけ別プロセスで実行する:
   for i in 0 1 2; do
@@ -16,7 +17,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 # ─────────────────────────────────────────────────────────────────────────────
 # テスト設定
@@ -36,12 +37,12 @@ class TestCfg(BaseModel):
     input_rgb: bool = True
     input_goal: bool = True
     stages: list[TestStageCfg] = [
-        # TestStageCfg(
-        #     stage_path="sample_data/stages/corridor1_2d/stage.usda",
-        #     fixed_spawn_pos=(0.4, 1.4, -1.0),
-        #     fixed_goal_pos=(-0.1, -1.3, -0.8),
-        #     fixed_spawn_yaw_deg=-90.0,
-        # ),
+        TestStageCfg(
+            stage_path="sample_data/stages/corridor1_2d/stage.usda",
+            fixed_spawn_pos=(0.4, 1.4, -1.0),
+            fixed_goal_pos=(-0.1, -1.3, -0.8),
+            fixed_spawn_yaw_deg=-90.0,
+        ),
         TestStageCfg(
             stage_path="sample_data/stages/room1/stage.usda",
             fixed_spawn_pos=(0.9, -0.19, -2.6),
@@ -61,6 +62,7 @@ parser.add_argument("--model", type=str, default=None, help="チェックポイ�
 parser.add_argument(
     "--stage-index", type=int, default=0, help="評価するステージのインデックス"
 )
+parser.add_argument("--num-humans", type=int, default=0)
 args = parser.parse_args()
 
 from isaacsim import SimulationApp
@@ -81,8 +83,8 @@ _OUT = sys.stdout
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from envs.gym_wrapper import PointNavGymEnv
-from tasks.point_navigation.config import PointNavEnvCfg, SACCfg
+from envs.isaac_env import PointNavGymEnv
+from tasks.point_navigation.config import EnvConfig, ModelConfig, TrainConfig
 from tasks.point_navigation.policy.network import PointNavEncoder
 from tasks.point_navigation.policy.policy import SACAgent
 
@@ -112,23 +114,27 @@ def main():
     print(f"[test] Stage {args.stage_index}: {stage_cfg.stage_path}")
     print(f"[test] Model: {test_cfg.model_path}")
     print(f"[test] Episodes: {test_cfg.episodes_per_stage}")
+    print(f"[test] num_humans: {args.num_humans}")
 
     # ── 環境構築 ─────────────────────────────────────────────────────────────
-    env_cfg = PointNavEnvCfg(
-        stage_path=stage_cfg.stage_path,
+    model_cfg = ModelConfig(
         input_rgb=test_cfg.input_rgb,
         input_goal=test_cfg.input_goal,
+    )
+    env_cfg = EnvConfig(
+        stage_path=stage_cfg.stage_path,
         fixed_spawn_pos=stage_cfg.fixed_spawn_pos,
         fixed_goal_pos=stage_cfg.fixed_goal_pos,
         fixed_spawn_yaw_deg=stage_cfg.fixed_spawn_yaw_deg,
         show_camera_viewport=not args.headless,
+        num_humans=args.num_humans,
     )
 
-    env = PointNavGymEnv(cfg=env_cfg)
+    env = PointNavGymEnv(env_cfg=env_cfg, model_cfg=model_cfg)
     obs, _ = env.reset()
 
     action_dim = env.action_space.shape[0]
-    img_size = env_cfg.camera_resolution[0]
+    img_size = model_cfg.camera_resolution[0]
 
     # ── エージェント構築・ロード ───────────────────────────────────────────────
     def encoder_factory():
@@ -141,7 +147,7 @@ def main():
     agent = SACAgent(
         encoder_factory=encoder_factory,
         action_dim=action_dim,
-        cfg=SACCfg(),
+        cfg=TrainConfig(),
         device=DEVICE,
     )
     agent.load(test_cfg.model_path)
@@ -149,6 +155,7 @@ def main():
     # ── 評価ループ ────────────────────────────────────────────────────────────
     successes = 0
     collisions = 0
+    human_collisions = 0
     timeouts = 0
     total_reward = 0.0
     total_dist_final = 0.0
@@ -177,6 +184,7 @@ def main():
 
         success = bool(info.get("success", False))
         collision = bool(info.get("collision", False))
+        human_collision = bool(info.get("human_collision", False))
         timeout = bool(info.get("timeout", False))
         dist_final = float(info.get("dist", 0.0))
         spl = (
@@ -187,6 +195,7 @@ def main():
 
         successes += int(success)
         collisions += int(collision)
+        human_collisions += int(human_collision)
         timeouts += int(timeout)
         total_reward += ep_reward
         total_dist_final += dist_final
@@ -205,6 +214,10 @@ def main():
     tqdm.write(f"Episodes      : {n}", file=_OUT)
     tqdm.write(f"Success Rate  : {successes / n:.3f}  ({successes}/{n})", file=_OUT)
     tqdm.write(f"Collision Rate: {collisions / n:.3f}  ({collisions}/{n})", file=_OUT)
+    tqdm.write(
+        f"Human Collision Rate: {human_collisions / n:.3f}  ({human_collisions}/{n})",
+        file=_OUT,
+    )
     tqdm.write(f"Timeout Rate  : {timeouts / n:.3f}  ({timeouts}/{n})", file=_OUT)
     tqdm.write(f"Avg Reward    : {total_reward / n:.2f}", file=_OUT)
     tqdm.write(f"Avg Dist Final: {total_dist_final / n:.3f} m", file=_OUT)

@@ -3,7 +3,10 @@
 # 実行: bash setup.sh
 set -e
 
-ENV_DIR="$HOME/env_Isaac-GS"
+# 仮想環境はリポジトリ直下 .venv に集約する。
+# uv run は既定で .venv を使うため、pyproject の [tool.uv] managed=false（自動sync無効）と
+# 併せて `source activate` なしに `uv run xxx.py` が実行できる。
+ENV_DIR=".venv"
 
 # 1. 仮想環境作成
 uv venv --python 3.12 --seed "$ENV_DIR"
@@ -28,5 +31,6 @@ uv pip install -e .
 
 echo ""
 echo "セットアップ完了！"
-echo "以降は以下で環境を有効化してください:"
-echo "  source $ENV_DIR/bin/activate"
+echo "実行方法（source activate 不要）:"
+echo "  uv run tasks/point_navigation/train.py --headless"
+echo "  （従来通り source .venv/bin/activate → python でも可）"

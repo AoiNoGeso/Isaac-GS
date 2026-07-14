@@ -172,7 +172,7 @@ class SACAgent:
     Args:
         encoder_factory: PointNavEncoder を返す
         action_dim:      行動次元数
-        cfg:             SACCfg
+        cfg:             TrainConfig
         device:          "cuda" or "cpu"
     """
 

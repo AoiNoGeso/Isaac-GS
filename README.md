@@ -40,8 +40,7 @@ Isaac-GS/
 │   └── corridor1/
 │       └── stage.usda
 ├── envs/
-│   ├── isaac_env.py            # IsaacSim 環境コア
-│   ├── gym_wrapper.py          # gymnasium.Env ラッパー
+│   ├── isaac_env.py            # IsaacSim 環境コア + gymnasium.Env ラッパー
 │   └── sensors/
 │       └── camera_sensor.py    # RGB カメラセンサ
 ├── tasks/
@@ -84,7 +83,7 @@ zsh setup.sh
 
 `setup.sh` は以下を順番に実行します：
 
-1. `~/env_Isaac-GS` (Python 3.12) 仮想環境を作成
+1. リポジトリ直下に `.venv` (Python 3.12) 仮想環境を作成
 2. IsaacSim 6.0 をインストール
 3. PyTorch 2.10.0 (CUDA 12.8) をインストール
 4. `pyproject.toml` のパッケージ (gymnasium / wandb / Pillow / pydantic) をインストール
@@ -94,7 +93,7 @@ zsh setup.sh
 ### 1. 3DGS (.ply) → .usdc
 
 ```bash
-python stage_generation/convert_gs.py \
+uv run stage_generation/convert_gs.py \
     -i path/to/gaussian.ply \
     -o stages/corridor1
 ```
@@ -102,11 +101,11 @@ python stage_generation/convert_gs.py \
 ### 2. 床・壁メッシュ (.ply) → .usd
 
 ```bash
-python stage_generation/convert_mesh.py \
+uv run stage_generation/convert_mesh.py \
     -i path/to/floor.ply \
     -o stages/corridor1/floor_mesh.usd
 
-python stage_generation/convert_mesh.py \
+uv run stage_generation/convert_mesh.py \
     -i path/to/wall.ply \
     -o stages/corridor1/wall_mesh.usd
 ```
@@ -114,28 +113,28 @@ python stage_generation/convert_mesh.py \
 ### 3. stage.usda の合成
 
 ```bash
-python stage_generation/compose_stage.py -i stages/corridor1
+uv run stage_generation/compose_stage.py -i stages/corridor1
 ```
 
 出力: `stages/corridor1/stage.usda`
 
 ### 4. RL 学習
 
-学習設定は `tasks/point_navigation/config.py` の `PointNavTrainCfg` / `SACCfg` で編集します
+学習設定は `tasks/point_navigation/config.py` の `TrainConfig` / `EnvConfig` / `ModelConfig` で編集します
 
 ```bash
 # 学習開始
-python tasks/point_navigation/train.py
+uv run tasks/point_navigation/train.py
 
 # 実験名を指定
-python tasks/point_navigation/train.py --headless --run-name my_run
+uv run tasks/point_navigation/train.py --headless --run-name my_run
 
-# チェックポイントから再開（パスは config.py の PointNavTrainCfg.log_dir に依存）
-python tasks/point_navigation/train.py \
+# チェックポイントから再開（パスは config.py の TrainConfig.log_dir に依存）
+uv run tasks/point_navigation/train.py \
     --headless --checkpoint runs/PointNav-SAC-RGB/checkpoints/sac_10000.pt
 
 # wandb なし
-python tasks/point_navigation/train.py --headless --no-wandb
+uv run tasks/point_navigation/train.py --headless --no-wandb
 ```
 
 
@@ -145,7 +144,7 @@ python tasks/point_navigation/train.py --headless --no-wandb
 
 ```bash
 # 単一ステージ（index 0）
-python tasks/point_navigation/test.py \
+uv run tasks/point_navigation/test.py \
     --model runs/PointNav-RGB+Goal/0627/sac_final.pt \
     --stage-index 0 \
     --headless
@@ -155,7 +154,7 @@ python tasks/point_navigation/test.py \
 
 ```bash
 for i in 0 1; do
-  python tasks/point_navigation/test.py \
+  uv run tasks/point_navigation/test.py \
       --model runs/PointNav-RGB+Goal/0627/sac_final.pt \
       --stage-index $i \
       --headless
@@ -186,14 +185,17 @@ SPL           : 0.613
 ## デバッグ
 
 ```bash
-python debug/teleop.py
+uv run debug/teleop.py
+uv run debug/teleop.py --num-humans 2            # IRA 人物キャラを注入して衝突判定を確認
+uv run debug/teleop.py --stage corridor1_2d      # ステージ切替（room1 / corridor1_2d）
 ```
 
 | キー | 動作 |
 |---|---|
 | W / S | 前進 / 後退 |
 | A / D | 左回転 / 右回転 |
-| P | 現在のワールド座標を表示 |
+| P | 現在のワールド座標を表示（人物ありの場合は各人物の座標も） |
+| R | 手動リセット |
 | Q | 終了 |
 
 ## システム構成
@@ -212,6 +214,6 @@ python debug/teleop.py
 
 - `convert_gs.py` 内の `GSPLAT_DIR` / `USD_LIBS` パスは環境に合わせて修正してください (以下のコマンドで検索できます)
   ```bash
-  find ~/env_Isaac-GS -type d -name "omni.kit.converter.gsplat-*"
-  find ~/env_Isaac-GS -type d -name "omni.usd.libs-*"
+  find .venv -type d -name "omni.kit.converter.gsplat-*"
+  find .venv -type d -name "omni.usd.libs-*"
   ```

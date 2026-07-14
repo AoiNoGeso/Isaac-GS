@@ -19,8 +19,8 @@ TF 参照:
 
 実行方法:
   # 別ターミナルで sim_ros2_bridge.py を起動してから:
-  python3 deploy/deploy.py --model runs/point_nav/sac_final
-  python3 deploy/deploy.py --model runs/point_nav/checkpoints/sac_10000_steps
+  python3 deploy/deploy.py --model runs/point_nav/sac_final.pt
+  python3 deploy/deploy.py --model runs/point_nav/checkpoints/sac_10000.pt
 """
 
 import argparse
@@ -46,7 +46,7 @@ from tasks.point_navigation.policy.policy import SACAgent
 
 _IMG_SIZE = 84
 _V_MAX = 0.3  # [m/s]  実機に合わせて調整
-_W_MAX = 1.0  # [rad/s] 実機に合わせて調整
+_W_MAX = 0.3  # [rad/s] シミュレータの _V_ANGULAR_MAX に合わせる
 _GOAL_THRESHOLD = 0.4  # [m]
 
 
@@ -57,8 +57,12 @@ def _parse_args():
     p.add_argument("--w-max", type=float, default=_W_MAX)
     p.add_argument("--goal-threshold", type=float, default=_GOAL_THRESHOLD)
     p.add_argument("--hz", type=float, default=10.0, help="制御周期 [Hz]")
-    p.add_argument("--input-goal", action="store_true", default=False,
-                   help="ゴールベクトルを観測に含める（RGB+Goalモデル用）")
+    p.add_argument(
+        "--input-goal",
+        action="store_true",
+        default=False,
+        help="ゴールベクトルを観測に含める（RGB+Goalモデル用）",
+    )
     return p.parse_args()
 
 
@@ -251,23 +255,23 @@ def main():
 
     import torch
 
-    from tasks.point_navigation.config import PointNavEnvCfg, SACCfg
+    from tasks.point_navigation.config import ModelConfig, TrainConfig
     from tasks.point_navigation.policy.network import PointNavEncoder
 
     input_goal = args.input_goal
-    env_cfg = PointNavEnvCfg(input_goal=input_goal)
-    img_size = env_cfg.camera_resolution[0]
+    model_cfg = ModelConfig(input_goal=input_goal)
+    img_size = model_cfg.camera_resolution[0]
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     def encoder_factory():
         return PointNavEncoder(
-            input_rgb=env_cfg.input_rgb,
+            input_rgb=model_cfg.input_rgb,
             input_goal=input_goal,
             img_size=img_size,
         )
 
     model = SACAgent(
-        encoder_factory=encoder_factory, action_dim=2, cfg=SACCfg(), device=device
+        encoder_factory=encoder_factory, action_dim=2, cfg=TrainConfig(), device=device
     )
     model.load(args.model)
 

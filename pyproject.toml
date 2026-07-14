@@ -17,5 +17,12 @@ dependencies = [
 
 # IsaacSim と PyTorch は setup.sh で別途インストール（バージョン競合を避けるため）
 
+[tool.uv]
+# IsaacSim は別 venv (~/.venv/env_Isaac-GS) に手動インストールしており uv.lock に含まれない。
+# managed=false で uv run の自動 sync を無効化し、既存環境が prune されるのを防ぐ。
+# 併せて .venv を ~/.venv/env_Isaac-GS へのシンボリックリンクにすることで、
+# `source activate` なしに `uv run xxx.py` が IsaacSim 入り環境で実行できる（setup.sh 参照）。
+managed = false
+
 [tool.setuptools.packages.find]
 include = ["envs*", "tasks*"]
