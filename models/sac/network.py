@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 
+from models.sac.config import ModelConfig
+
 
 class CNNEncoder(nn.Module):
     def __init__(self, img_size: int = 84):
@@ -38,7 +40,7 @@ class PointNavEncoder(nn.Module):
 
     def __init__(self, input_rgb: bool = True, input_goal: bool = True, img_size: int = 84):
         super().__init__()
-        self.input_rgb  = input_rgb
+        self.input_rgb = input_rgb
         self.input_goal = input_goal
         self.out_dim = 0
         if input_rgb:
@@ -55,3 +57,12 @@ class PointNavEncoder(nn.Module):
         if self.input_goal:
             parts.append(self.goal_enc(obs["goal"]))
         return torch.cat(parts, dim=-1)
+
+
+def make_encoder(model_cfg: ModelConfig, img_size: int) -> PointNavEncoder:
+    """train/test/deploy 共通のエンコーダファクトリ生成元"""
+    return PointNavEncoder(
+        input_rgb=model_cfg.input_rgb,
+        input_goal=model_cfg.input_goal,
+        img_size=img_size,
+    )

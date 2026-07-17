@@ -25,4 +25,4 @@ dependencies = [
 managed = false
 
 [tool.setuptools.packages.find]
-include = ["envs*", "tasks*"]
+include = ["envs*", "models*", "stage_generation*", "utils*"]

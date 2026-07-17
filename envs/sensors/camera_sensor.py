@@ -2,19 +2,30 @@ import numpy as np
 
 
 class RGBDCamera:
-    def __init__(self, camera_prim_path: str, resolution: tuple[int, int]):
+    def __init__(
+        self,
+        camera_prim_path: str,
+        resolution: tuple[int, int],
+        translation: np.ndarray | None = None,
+        orientation: np.ndarray | None = None,
+    ):
         import omni.replicator.core as rep
         from isaacsim.sensors.camera import Camera
 
         self._resolution = resolution
         self._rep = rep
 
+        kwargs = {}
+        if translation is not None:
+            kwargs["translation"] = translation
+        if orientation is not None:
+            kwargs["orientation"] = orientation
+
         self._cam = Camera(
             prim_path=camera_prim_path,
-            translation=np.array([-1.0, 0.0, 1.0]),
-            orientation=np.array([1.0, 0.0, 0.0, 0.0]),
             frequency=30,
             resolution=resolution,
+            **kwargs,
         )
         self._cam.initialize()
 

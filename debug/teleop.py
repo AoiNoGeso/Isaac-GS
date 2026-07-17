@@ -1,16 +1,15 @@
 """
-WASD テレオペスクリプト（衝突判定デバッグ用）
+デバッグ用テレオペスクリプト
 
 W/S: 前進/後退  A/D: 左回転/右回転  P: 座標表示  R: リセット  Q: 終了
 
---num-humans > 0 の場合は IRA 人物キャラを注入し、ロボット-人物の衝突判定
-（IRA 純正 AvoidanceHandler イベント）を確認できる。衝突しても自動リセットしない。
+--num-humans > 0 の場合は IRA アバターを注入する
 
 実行:
   cd ~/Programs/Isaac-GS
   uv run debug/teleop.py
   uv run debug/teleop.py --num-humans 2
-  uv run debug/teleop.py --stage corridor1_2d
+  uv run debug/teleop.py --stage corridor1
 """
 
 import argparse
@@ -21,7 +20,10 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--num-humans", type=int, default=0)
 parser.add_argument("--headless", action="store_true", default=False)
 parser.add_argument(
-    "--stage", type=str, choices=["room1", "corridor1_2d"], default="room1"
+    "--stage", type=str, choices=["room1", "corridor1", "corridor2"], default="corridor2"
+)
+parser.add_argument(
+    "--vis-goal", action="store_true", default=False, help="スポーン(青)・ゴール(赤)地点に半透明の円を表示"
 )
 args = parser.parse_args()
 
@@ -41,37 +43,59 @@ import omni.appwindow
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from envs.isaac_env import _V_ANGULAR_MAX, _V_LINEAR_MAX, PointNavIsaacEnv
-from tasks.point_navigation.config import EnvConfig, ModelConfig
+from envs import PointNavIsaacEnv
+from envs.config import EnvConfig, STAGE_PRESETS
 
-_STAGE_PRESETS = {
-    "room1": dict(
-        stage_path="sample_data/stages/room1/stage.usda",
-        fixed_spawn_pos=(0.9, -0.19, -2.6),
-        fixed_goal_pos=(-3.0, 1.6, -2.6),
-        fixed_spawn_yaw_deg=137,
-    ),
-    "corridor1_2d": dict(
-        stage_path="sample_data/stages/corridor1_2d/stage.usda",
-        fixed_spawn_pos=(0.4, 1.4, -1.0),
-        fixed_goal_pos=(-0.1, -1.3, -0.8),
-        fixed_spawn_yaw_deg=-90,
-    ),
-}
+MARKER_RADIUS = 0.3  # m
+MARKER_HEIGHT = 0.02  # m, xy平面に対して十分薄い円盤
+
+
+def _make_marker(stage, path: str, color: tuple[float, float, float]):
+    from pxr import Gf, UsdGeom
+
+    cyl = UsdGeom.Cylinder.Define(stage, path)
+    cyl.CreateAxisAttr("Z")
+    cyl.CreateRadiusAttr(MARKER_RADIUS)
+    cyl.CreateHeightAttr(MARKER_HEIGHT)
+    cyl.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+    cyl.CreateDisplayOpacityAttr([0.4])
+    prim = cyl.GetPrim()
+    UsdGeom.Imageable(prim).MakeVisible()
+    UsdGeom.Xformable(prim).AddTranslateOp()
+    return prim
+
+
+def _update_marker(prim, pos):
+    from pxr import Gf
+
+    prim.GetAttribute("xformOp:translate").Set(
+        Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2]))
+    )
 
 
 def main():
-    preset = _STAGE_PRESETS[args.stage]
+    preset = STAGE_PRESETS[args.stage]
     env_cfg = EnvConfig(
         num_humans=args.num_humans,
-        # 人物ありの場合はゆっくり歩かせ、毎エピソード再配置しない（狙って接近しやすくする）
-        human_speed_range=(0.6, 0.6) if args.num_humans > 0 else (0.8, 1.5),
+        human_speed_range=(0.8, 1.5),
         reset_humans_each_episode=args.num_humans <= 0,
-        **preset,
+        stage_path=preset.stage_path,
+        fixed_spawn_pos=preset.fixed_spawn_pos,
+        fixed_goal_pos=preset.fixed_goal_pos,
+        fixed_spawn_yaw_deg=preset.fixed_spawn_yaw_deg,
     )
-    model_cfg = ModelConfig()
-    env = PointNavIsaacEnv(env_cfg, model_cfg)
+    env = PointNavIsaacEnv(env_cfg)
     env.reset()
+
+    spawn_marker = goal_marker = None
+    if args.vis_goal:
+        import omni.usd
+
+        stage = omni.usd.get_context().get_stage()
+        spawn_marker = _make_marker(stage, "/World/DebugVis/SpawnMarker", (0.2, 0.4, 1.0))
+        goal_marker = _make_marker(stage, "/World/DebugVis/GoalMarker", (1.0, 0.2, 0.2))
+        _update_marker(spawn_marker, env._get_robot_pos())
+        _update_marker(goal_marker, env._goal_pos)
 
     input_iface = carb.input.acquire_input_interface()
     keyboard = omni.appwindow.get_default_app_window().get_keyboard()
@@ -87,7 +111,7 @@ def main():
     input_iface.subscribe_to_keyboard_events(keyboard, on_key)
     print("[Teleop] W/S=前後  A/D=回転  P=座標表示  R=リセット  Q=終了")
     if args.num_humans > 0:
-        print(f"[Teleop] 人物 {len(env._ira_characters)} 体。IRA AvoidanceHandler イベントで衝突検知。")
+        print(f"[Teleop] 人物 {len(env._ira_characters)} 体, 接触センサーで衝突検知")
 
     step = 0
     prev_hc = False
@@ -99,6 +123,9 @@ def main():
 
         if carb.input.KeyboardInput.R in keys_pressed:
             env.reset()
+            if args.vis_goal:
+                _update_marker(spawn_marker, env._get_robot_pos())
+                _update_marker(goal_marker, env._goal_pos)
             keys_pressed.discard(carb.input.KeyboardInput.R)
             step = 0
             prev_hc = False
@@ -157,7 +184,7 @@ def main():
             hc = bool(info.get("human_collision", False))
             wall = bool(info.get("collision", False)) and not hc
 
-            # 衝突を「検知した瞬間（False→True）」に消えない警告を残す
+            # 衝突検知の瞬間 (False→True) に消えない警告を残す
             if hc and not prev_hc:
                 collision_count += 1
                 print(
@@ -167,6 +194,7 @@ def main():
             prev_hc = hc
 
             print(
+                "\x1b[K"
                 f"[step {step:5d}] "
                 f"robot=({pos[0]:.2f},{pos[1]:.2f})  "
                 f"nearest_human={nearest_str}  "
@@ -174,10 +202,11 @@ def main():
                 f"wall={'YES' if wall else 'no '}",
                 end="\r",
             )
-            # 衝突しても自動リセットしない（押し当てて観察できるように）。R で手動リセット。
+            # 衝突しても自動リセットしない (押し当てて観察できるように), R で手動リセット
             step += 1
         else:
             print(
+                "\x1b[K"
                 f"[step {step:4d}] "
                 f"pos=({pos[0]:.2f},{pos[1]:.2f})  "
                 f"yaw={yaw_deg:+.1f}deg  "
@@ -191,6 +220,9 @@ def main():
                 print()
                 print(f"[Teleop] episode end — {info}")
                 env.reset()
+                if args.vis_goal:
+                    _update_marker(spawn_marker, env._get_robot_pos())
+                    _update_marker(goal_marker, env._goal_pos)
                 step = 0
             else:
                 step += 1

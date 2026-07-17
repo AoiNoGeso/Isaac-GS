@@ -1,16 +1,10 @@
 """
 Point Navigation テストスクリプト
-IsaacSim 6.0 + 学習済み SAC モデルで deterministic 評価を行う
 
 実行方法:
   cd ~/Programs/Isaac-GS
-  uv run tasks/point_navigation/test.py --model runs/PointNav-RGB+Goal/0626/sac_final.pt --stage-index 0 --headless
-  uv run tasks/point_navigation/test.py --model path/to/sac_final.pt --stage-index 0 --num-humans 2 --headless
-
-複数ステージを評価する場合はステージ数分だけ別プロセスで実行する:
-  for i in 0 1 2; do
-    uv run tasks/point_navigation/test.py --model path/to/sac_final.pt --stage-index $i --headless
-  done
+  uv run models/sac/test.py --model runs/PointNav-RGB+Goal/0626/sac_final.pt --stage-index 0
+  uv run models/sac/test.py --model path/to/sac_final.pt --stage-index 0 --num-humans 2
 """
 
 import argparse
@@ -19,42 +13,13 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-# ─────────────────────────────────────────────────────────────────────────────
-# テスト設定
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class TestStageCfg(BaseModel):
-    stage_path: str
-    fixed_spawn_pos: tuple[float, float, float]
-    fixed_goal_pos: tuple[float, float, float]
-    fixed_spawn_yaw_deg: float | None = None  # None でランダム
-
 
 class TestCfg(BaseModel):
     model_path: str = "checkpoints/sac_final.pt"
     episodes_per_stage: int = 100
     input_rgb: bool = True
     input_goal: bool = True
-    stages: list[TestStageCfg] = [
-        TestStageCfg(
-            stage_path="sample_data/stages/corridor1_2d/stage.usda",
-            fixed_spawn_pos=(0.4, 1.4, -1.0),
-            fixed_goal_pos=(-0.1, -1.3, -0.8),
-            fixed_spawn_yaw_deg=-90.0,
-        ),
-        TestStageCfg(
-            stage_path="sample_data/stages/room1/stage.usda",
-            fixed_spawn_pos=(0.9, -0.19, -2.6),
-            fixed_goal_pos=(-3.0, 1.6, -2.6),
-            fixed_spawn_yaw_deg=137.0,
-        ),
-    ]
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CLI 引数（SimulationApp より前に parse する）
-# ─────────────────────────────────────────────────────────────────────────────
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--headless", action="store_true", default=False)
@@ -83,17 +48,14 @@ _OUT = sys.stdout
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from envs.isaac_env import PointNavGymEnv
-from tasks.point_navigation.config import EnvConfig, ModelConfig, TrainConfig
-from tasks.point_navigation.policy.network import PointNavEncoder
-from tasks.point_navigation.policy.policy import SACAgent
+from envs import PointNavGymEnv
+from envs.config import EnvConfig, STAGE_PRESETS
+from models.sac.config import ModelConfig, TrainConfig
+from models.sac.network import make_encoder
+from models.sac.policy import SACAgent
+from utils.wandb_utils import EpisodeTracker
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# メイン
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 def main():
@@ -102,21 +64,21 @@ def main():
     if args.model is not None:
         test_cfg.model_path = args.model
 
-    if args.stage_index >= len(test_cfg.stages):
+    stage_names = list(STAGE_PRESETS.keys())
+    if args.stage_index >= len(stage_names):
         print(
-            f"[test] Error: stage-index {args.stage_index} は範囲外です (stages={len(test_cfg.stages)})"
+            f"[test] Error: stage-index {args.stage_index} は範囲外です (stages={len(stage_names)})"
         )
         app.close()
         return
 
-    stage_cfg = test_cfg.stages[args.stage_index]
+    stage_cfg = STAGE_PRESETS[stage_names[args.stage_index]]
 
     print(f"[test] Stage {args.stage_index}: {stage_cfg.stage_path}")
     print(f"[test] Model: {test_cfg.model_path}")
     print(f"[test] Episodes: {test_cfg.episodes_per_stage}")
     print(f"[test] num_humans: {args.num_humans}")
 
-    # ── 環境構築 ─────────────────────────────────────────────────────────────
     model_cfg = ModelConfig(
         input_rgb=test_cfg.input_rgb,
         input_goal=test_cfg.input_goal,
@@ -130,29 +92,19 @@ def main():
         num_humans=args.num_humans,
     )
 
-    env = PointNavGymEnv(env_cfg=env_cfg, model_cfg=model_cfg)
+    env = PointNavGymEnv(env_cfg=env_cfg)
     obs, _ = env.reset()
 
     action_dim = env.action_space.shape[0]
-    img_size = model_cfg.camera_resolution[0]
-
-    # ── エージェント構築・ロード ───────────────────────────────────────────────
-    def encoder_factory():
-        return PointNavEncoder(
-            input_rgb=test_cfg.input_rgb,
-            input_goal=test_cfg.input_goal,
-            img_size=img_size,
-        )
 
     agent = SACAgent(
-        encoder_factory=encoder_factory,
+        encoder_factory=lambda: make_encoder(model_cfg, img_size=env_cfg.camera_resolution[0]),
         action_dim=action_dim,
         cfg=TrainConfig(),
         device=DEVICE,
     )
     agent.load(test_cfg.model_path)
 
-    # ── 評価ループ ────────────────────────────────────────────────────────────
     successes = 0
     collisions = 0
     human_collisions = 0
@@ -187,11 +139,7 @@ def main():
         human_collision = bool(info.get("human_collision", False))
         timeout = bool(info.get("timeout", False))
         dist_final = float(info.get("dist", 0.0))
-        spl = (
-            float(success) * (init_dist / max(path_len, init_dist))
-            if init_dist > 0
-            else 0.0
-        )
+        spl = EpisodeTracker.compute_spl(success, init_dist, path_len)
 
         successes += int(success)
         collisions += int(collision)
@@ -206,7 +154,6 @@ def main():
             collision=f"{collisions}/{ep + 1}",
         )
 
-    # ── 結果表示 ──────────────────────────────────────────────────────────────
     n = test_cfg.episodes_per_stage
     tqdm.write(f"\n{'=' * 60}", file=_OUT)
     tqdm.write(f"Stage {args.stage_index}: {stage_cfg.stage_path}", file=_OUT)
