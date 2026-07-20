@@ -86,7 +86,7 @@ class EnvConfig(BaseModel):
     r_spin: float = -0.05  # 回転ペナルティ係数 (r_spin × ω²)
     r_time: float = -0.025  # 毎ステップ定数ペナルティ
     r_timeout: float = 0.0  # タイムアウトペナルティ (r_timeで代替のため0)
-    r_human_collision: float = -20.0  # ロボット-人物 接触ペナルティ (検知で即終了)
+    r_human_collision: float = -100.0  # ロボット-人物 接触ペナルティ (検知で即終了)
 
     # ── 判定 ────────────────────────────────────────────────────
     collision_grace_steps: int = 5
@@ -102,7 +102,7 @@ class EnvConfig(BaseModel):
     fixed_spawn_yaw_deg: float | None = STAGE_PRESETS["corridor2"].fixed_spawn_yaw_deg
 
     # ── 人物キャラ (num_humans=0 で従来の point navigation) ───────
-    num_humans: int = 3
+    num_humans: int = 2
     human_speed_range: tuple[float, float] = (0.8, 1.5)  # Wander 歩行速度 [m/s]
     human_distance_range: tuple[float, float] = (3.0, 8.0)  # Wander 目標距離 [m]
     human_seed: int = 42
@@ -111,7 +111,7 @@ class EnvConfig(BaseModel):
     # ── NavMesh bake (壁+床の統合bake) ────────────────────────
     # navmesh bake時のagent半径, 壁からこの距離だけ内側にwalkable面を狭める
     # 単位はcm (omni.anim.navigation.coreの既定agentMinRadius=20=0.2m), 0以下で変更しない
-    navmesh_agent_radius_cm: float = 50.0
+    navmesh_agent_radius_cm: float = 55.0
     # navmesh bake時に要求する天井までの最小高さ, これより低い箇所は歩行不可と判定される
     # 単位はcm (既定agentMinHeight=200=2.0m), 0以下で変更しない
     navmesh_agent_height_cm: float = 200.0

@@ -40,6 +40,7 @@ omni.log.get_log().set_channel_level(
 import carb
 import numpy as np
 import omni.appwindow
+import omni.usd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -78,7 +79,6 @@ def main():
     env_cfg = EnvConfig(
         num_humans=args.num_humans,
         human_speed_range=(0.8, 1.5),
-        reset_humans_each_episode=args.num_humans <= 0,
         stage_path=preset.stage_path,
         fixed_spawn_pos=preset.fixed_spawn_pos,
         fixed_goal_pos=preset.fixed_goal_pos,
@@ -89,8 +89,6 @@ def main():
 
     spawn_marker = goal_marker = None
     if args.vis_goal:
-        import omni.usd
-
         stage = omni.usd.get_context().get_stage()
         spawn_marker = _make_marker(stage, "/World/DebugVis/SpawnMarker", (0.2, 0.4, 1.0))
         goal_marker = _make_marker(stage, "/World/DebugVis/GoalMarker", (1.0, 0.2, 0.2))

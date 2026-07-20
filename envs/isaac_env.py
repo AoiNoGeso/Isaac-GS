@@ -12,6 +12,9 @@ MOTION_LIBRARY_PRIM_PATH = "/World/HumanMotionLibrary"
 HUMANS_ROOT = "/World/Humans"
 CHAR_ASSET_DIR = "Isaac/People/Characters/"
 
+# 落下判定
+FALL_Z_THRESHOLD = -50.0
+
 
 class PointNavIsaacEnv:
     def __init__(self, env_cfg: EnvConfig):
@@ -148,8 +151,6 @@ class PointNavIsaacEnv:
                     settings.set(k, v)
         self._world.step(render=False)
 
-        self._measure_floor_z(stage)
-
         self._robot = Articulation(prim_paths_expr=robot.prim_path)
         self._robot.initialize()
 
@@ -167,7 +168,6 @@ class PointNavIsaacEnv:
             raise
 
         # chassis_linkにPhysxContactReportAPIを付与しContactSensorを設置
-        # C++ IContactSensor経由のためNewtonエンジン下でも動作する
         chassis_prim_path = f"{robot.prim_path}/{robot.chassis_link}"
         chassis_prim = stage.GetPrimAtPath(chassis_prim_path)
         contact_report = PhysxSchema.PhysxContactReportAPI.Apply(chassis_prim)
@@ -214,15 +214,6 @@ class PointNavIsaacEnv:
             import carb
 
             carb.log_warn(f"[PointNavIsaacEnv] Camera viewport window skipped: {e}")
-
-    def _measure_floor_z(self, stage):
-        nm = self._inav.get_navmesh()
-        floor_z = 0.0
-        if nm is not None:
-            zs = [p[2] for _ in range(30) if (p := nm.query_random_point()) is not None]
-            if zs:
-                floor_z = float(np.median(zs))
-        self._floor_z = floor_z
 
     # ------------------------------------------------------------------
     # IRA 人物キャラ注入
@@ -370,7 +361,6 @@ class PointNavIsaacEnv:
             await app.next_update_async()
 
             # キャラクター自身の体がnavmeshの障害物として扱われるのを防ぐ
-            # (これが無いとmove_toのタスク/速度サイクルは進むが経路探索が機能せず静止したままになる)
             if not skelroot.HasAPI(NavSchema.NavMeshExcludeAPI):
                 omni.kit.commands.execute(
                     "ApplyNavMeshAPICommand", prim_path=skelroot.GetPath(), api=NavSchema.NavMeshExcludeAPI
@@ -428,8 +418,7 @@ class PointNavIsaacEnv:
             return []
 
         # timeline再生 → AgentsManager収集, physicsとtimelineを同時進行させる
-        # (app.update()だけだとphysics articulationとbehaviorランタイムが競合する)
-        pump = lambda: self._world.step(render=True)  # noqa: E731
+        pump = lambda: self._world.step(render=True)
         timeline.play()
         for _ in range(10):
             pump()
@@ -445,21 +434,47 @@ class PointNavIsaacEnv:
 
         return manager.get_agents_by_type(IRA_Character)
 
-    def _reset_humans(self):
-        """各人物をNavMesh上の新しいランダム点へ移動(runtimeが上書きする場合あり)"""
-        import omni.usd
-        from omni.metropolis.pipeline.usd_util import set_prim_pos
-        from pxr import Gf
+    def _relocate_human(self, character, pt: np.ndarray) -> None:
+        """人物をptへ再配置する"""
+        import carb
 
-        stage = omni.usd.get_context().get_stage()
-        for i in range(len(self._ira_characters)):
-            prim = stage.GetPrimAtPath(f"{HUMANS_ROOT}/Human_{i}")
-            if not prim.IsValid():
-                continue
+        bh = character.get_bh_agent()
+        if bh is None:
+            return
+        bh.reset(target=carb.Float3(float(pt[0]), float(pt[1]), float(pt[2])), facing=None)
+
+    def _reset_humans(self):
+        """各人物をNavMesh上の新しいランダム点へ再配置する"""
+        for character in self._ira_characters:
             pt = self._sample_navmesh_point_for_human()
             if pt is not None:
-                set_prim_pos(prim, Gf.Vec3f(float(pt[0]), float(pt[1]), float(pt[2])))
+                self._relocate_human(character, pt)
         self._world.step(render=False)
+
+    def _recover_stray_humans(self, threshold: float = 0.5) -> None:
+        """navmeshから外れた人物を検知し, 新しい navmesh 上の点へ復帰させる"""
+        import carb
+
+        nm = self._inav.get_navmesh()
+        if nm is None:
+            return
+        for character in self._ira_characters:
+            hp = character.get_world_position()
+            if hp is None:
+                continue
+            result = nm.query_closest_point(carb.Float3(float(hp.x), float(hp.y), float(hp.z)))
+            closest = result[0] if isinstance(result, tuple) else result
+            if closest is None:
+                continue
+            try:
+                cx, cy = float(closest.x), float(closest.y)
+            except AttributeError:
+                cx, cy = float(closest[0]), float(closest[1])
+            dist_sq = (cx - float(hp.x)) ** 2 + (cy - float(hp.y)) ** 2
+            if dist_sq > threshold**2:
+                pt = self._sample_navmesh_point_for_human()
+                if pt is not None:
+                    self._relocate_human(character, pt)
 
     # ------------------------------------------------------------------
     # reset / step
@@ -536,8 +551,10 @@ class PointNavIsaacEnv:
         self._robot.set_joint_velocity_targets(velocities=vel_target[np.newaxis, :])
 
         result = None
+        human_hit = False
         for i in range(self.env_cfg.decimation):
             self._world.step(render=(i == self.env_cfg.decimation - 1))
+            human_hit = human_hit or self._check_human_contact()
 
             if self._check_velocity_explosion():
                 self._recover_physics()
@@ -600,15 +617,16 @@ class PointNavIsaacEnv:
 
         obs, reward, terminated, truncated, info = result
 
-        # 壁衝突・速度爆発の早期returnでもterminated=Trueの場合があるため
-        # info["human_collision"]は常に更新し, 壁と同時衝突でも計上する
-        hc = self._check_human_contact()
+        hc = human_hit or self._check_human_contact()
         info["human_collision"] = hc
         if hc and not terminated:
             reward = float(self.env_cfg.r_human_collision)
             terminated = True
             truncated = False
             info["collision"] = True
+
+        if self._ira_characters:
+            self._recover_stray_humans()
 
         return obs, reward, terminated, truncated, info
 
@@ -702,7 +720,7 @@ class PointNavIsaacEnv:
         if self._check_wall_contact():
             return True
         pos = self._get_robot_pos()
-        return float(pos[2]) < self._floor_z - 0.5
+        return float(pos[2]) < FALL_Z_THRESHOLD
 
     def _recover_physics(self):
         safe_pos = self._sample_navmesh_point()
@@ -764,8 +782,7 @@ class PointNavIsaacEnv:
 
 
 class PointNavGymEnv(gym.Env):
-    """gymnasium.Envラッパー, RGB・Depth・goalを常に発行する(人物観測は含めない)
-    どのモダリティをモデル入力に使うかはmodels側のModelConfigが選ぶ"""
+    """gymnasium.Envラッパー, RGB・Depth・goalを発行"""
 
     def __init__(self, env_cfg: EnvConfig | None = None):
         super().__init__()

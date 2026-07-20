@@ -9,8 +9,8 @@ class ModelConfig(BaseModel):
 
 class TrainConfig(BaseModel):
     total_timesteps: int = 500_000
-    run_name: str | None = "PointNav_room1"
-    log_dir: str = "runs/PointNav/room1"
+    run_name: str | None = "S2-PGB+G_corridor2_0719"
+    log_dir: str = "runs/SocialNav-RGB+Goal/corridor2/0719"
     log_interval: int = 1_000
     checkpoint_interval: int = 20_000
 
