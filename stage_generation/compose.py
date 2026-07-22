@@ -1,9 +1,4 @@
-"""
-gs.usdc / floor_mesh.usd / wall_mesh.usd を統合し,
-CollisionAPI 付与・NavMeshVolume 自動配置を行った stage.usda を生成する.
-
-NavMesh Bake は API から実行できないため, 生成後に Isaac Sim GUI で手動実施.
-"""
+"""gs.usdc / floor_mesh.usd / wall_mesh.usd を統合し, CollisionAPI 付与・NavMeshVolume 自動配置を行った stage.usda を生成する (NavMesh Bake は API 不可のため生成後に Isaac Sim GUI で手動実施)."""
 
 import os
 
@@ -57,8 +52,7 @@ def run(
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
     UsdGeom.SetStageMetersPerUnit(stage, 1.0)
 
-    # defaultPrim を "env" にすることで add_reference_to_stage(prim_path="/World/env") 時に
-    # /World/env/floor_mesh, /World/env/wall_mesh が正しく解決される.
+    # defaultPrim を "env" にすることで add_reference_to_stage(prim_path="/World/env") 時に floor_mesh/wall_mesh が正しく解決される.
     env_prim = UsdGeom.Xform.Define(stage, "/env")
     stage.SetDefaultPrim(env_prim.GetPrim())
 
@@ -143,8 +137,7 @@ def run(
         f"max=({bmax[0]:.2f},{bmax[1]:.2f},{bmax[2]:.2f})"
     )
 
-    # Z-up 座標系: X/Y が水平, Z が垂直
-    # スケール = ボリュームの全辺長 (extent が ±0.5 のため scale がそのまま辺長)
+    # Z-up: X/Y が水平, Z が垂直. スケール = 全辺長 (extent が ±0.5 のため scale がそのまま辺長)
     sx = (bmax[0] - bmin[0]) + margin_xy * 2
     sy = (bmax[1] - bmin[1]) + margin_xy * 2
     sz = (bmax[2] - bmin[2]) + margin_z_bot + margin_z_top

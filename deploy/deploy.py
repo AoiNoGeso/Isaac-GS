@@ -1,27 +1,4 @@
-"""
-Point Navigation デプロイスクリプト (ROS2 policy ノード)
-
-sim_ros2_bridge.py (または実機ドライバ) と組み合わせて使用する.
-RViz2 で '2D Goal Pose' を指定することでゴールを設定できる.
-
-ロボット位置は TF の map→base_footprint から取得する (SLAM の自己位置推定を使用).
-ゴール座標は /goal_pose (map フレーム) をそのまま使用するため座標変換不要.
-
-購読トピック:
-  /camera/camera/color/image_raw   sensor_msgs/Image
-  /goal_pose                geometry_msgs/PoseStamped
-
-TF 参照:
-  map → base_footprint      SLAM が配信する自己位置推定
-
-発行トピック:
-  /cmd_vel                  geometry_msgs/Twist
-
-実行方法:
-  # 別ターミナルで sim_ros2_bridge.py を起動してから:
-  python3 deploy/deploy.py --model runs/point_nav/sac_final.pt
-  python3 deploy/deploy.py --model runs/point_nav/checkpoints/sac_10000.pt
-"""
+"""Point Navigation デプロイスクリプト (ROS2 policy ノード): sim_ros2_bridge.py 等と組み合わせ, TF (map→base_footprint) からロボット位置, /goal_pose (map フレーム, 変換不要) からゴールを取得し /cmd_vel を発行する (購読: /camera/camera/color/image_raw, /goal_pose; 実行例: python3 deploy/deploy.py --model runs/point_nav/sac_final.pt)."""
 
 import argparse
 import sys
@@ -41,9 +18,7 @@ from envs.config import JACKAL
 from envs.geometry import goal_vec, quat_to_yaw
 from models.sac.policy import SACAgent
 
-# -------------------------------------------------------------------
 # 定数 (シミュレータの envs.config.JACKAL と合わせること)
-# -------------------------------------------------------------------
 
 _IMG_SIZE = 84
 _V_MAX = JACKAL.v_linear_max  # [m/s]  実機に合わせて調整
@@ -61,15 +36,13 @@ def _parse_args():
     p.add_argument(
         "--input-goal",
         action="store_true",
-        default=False,
+        default=True,
         help="ゴールベクトルを観測に含める（RGB+Goalモデル用）",
     )
     return p.parse_args()
 
 
-# -------------------------------------------------------------------
 # ROS2 ノード
-# -------------------------------------------------------------------
 
 
 class PointNavDeployNode(Node):
@@ -202,9 +175,7 @@ class PointNavDeployNode(Node):
         self._pub_cmd.publish(Twist())
 
 
-# -------------------------------------------------------------------
 # エントリポイント
-# -------------------------------------------------------------------
 
 
 def main():

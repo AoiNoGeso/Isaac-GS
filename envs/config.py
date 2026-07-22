@@ -16,7 +16,6 @@ class RobotConfig(BaseModel):
 
     camera_translation: tuple[float, float, float] | None = (0.0, 0.5, 0.0)  # カメラのオフセット (ロボット座標系)
     camera_orientation: tuple[float, float, float, float] | None = None
-    drive_model: str = "skid4"  # "skid4" | "differential"
     left_wheel_joints: list[str] = ["front_left_wheel_joint", "rear_left_wheel_joint"]
     right_wheel_joints: list[str] = ["front_right_wheel_joint", "rear_right_wheel_joint"]
     wheel_base: float = 0.376  # トレッド幅 [m] (ω→左右輪速度)
@@ -109,9 +108,7 @@ class EnvConfig(BaseModel):
     reset_humans_each_episode: bool = True  # エピソード毎に再配置 (ベストエフォート)
 
     # ── NavMesh bake (壁+床の統合bake) ────────────────────────
-    # navmesh bake時のagent半径, 壁からこの距離だけ内側にwalkable面を狭める
-    # 単位はcm (omni.anim.navigation.coreの既定agentMinRadius=20=0.2m), 0以下で変更しない
+    # navmesh bake時のagent半径 [cm] (既定agentMinRadius=20), 0以下で変更しない
     navmesh_agent_radius_cm: float = 55.0
-    # navmesh bake時に要求する天井までの最小高さ, これより低い箇所は歩行不可と判定される
-    # 単位はcm (既定agentMinHeight=200=2.0m), 0以下で変更しない
+    # navmesh bake時の要求最小天井高 [cm] (既定agentMinHeight=200), 0以下で変更しない
     navmesh_agent_height_cm: float = 200.0

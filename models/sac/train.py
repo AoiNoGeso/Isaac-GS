@@ -1,14 +1,4 @@
-"""
-Point Navigation 学習スクリプト
-IsaacSim 6.0 + 自前 SAC + wandb ログ
-
-実行方法:
-  cd ~/Programs/Isaac-GS
-  uv run models/sac/train.py --headless
-  uv run models/sac/train.py --headless --run-name my_run
-  uv run models/sac/train.py --headless --checkpoint runs/point_nav/checkpoints/sac_10000.pt
-  uv run models/sac/train.py --headless --num-humans 2
-"""
+"""Point Navigation 学習スクリプト（IsaacSim 6.0 + 自前 SAC + wandb ログ）実行例: uv run models/sac/train.py --headless [--run-name NAME] [--checkpoint PATH] [--num-humans N]"""
 
 import argparse
 import sys
@@ -117,7 +107,7 @@ def main():
     log_dir = train_cfg.log_dir
     ckpt_dir = f"{log_dir}/checkpoints"
     Path(ckpt_dir).mkdir(parents=True, exist_ok=True)
-    tracker = EpisodeTracker(window=100)
+    tracker = EpisodeTracker()
     tracker.reset(obs)
 
     modality_str = (

@@ -6,8 +6,7 @@ import numpy as np
 class EpisodeTracker:
     """1エピソード分の統計 (SPL 含む) を蓄積し, wandb ログ用 dict を返す."""
 
-    def __init__(self, window: int = 100):
-        self._window = window
+    def __init__(self):
         self._ep_reward = 0.0
         self._ep_steps = 0
         self._ep_path_len = 0.0
@@ -17,8 +16,6 @@ class EpisodeTracker:
         self._total_success = 0
         self._total_collision = 0
         self._total_human_collision = 0
-        self._success_buf: list[float] = []
-        self._collision_buf: list[float] = []
 
     def step(self, reward: float, info: dict):
         self._ep_reward += reward
@@ -50,12 +47,6 @@ class EpisodeTracker:
         self._total_success += int(success)
         self._total_collision += int(collision)
         self._total_human_collision += int(human_collision)
-        self._success_buf.append(float(success))
-        self._collision_buf.append(float(collision))
-        if len(self._success_buf) > self._window:
-            self._success_buf.pop(0)
-        if len(self._collision_buf) > self._window:
-            self._collision_buf.pop(0)
 
         spl = self.compute_spl(success, self._ep_init_dist, self._ep_path_len)
 

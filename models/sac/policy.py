@@ -1,12 +1,4 @@
-"""
-SAC (Soft Actor-Critic)
-
-構成:
-  ReplayBuffer  - 経験再生バッファ
-  Actor         - tanh squashing + 対数確率
-  Critic        - Clipped Double-Q (Q1, Q2)
-  SACAgent      - 学習・推論・保存/ロード
-"""
+"""SAC (Soft Actor-Critic): ReplayBuffer / Actor(tanh squashing) / Critic(Clipped Double-Q) / SACAgent"""
 
 import copy
 import math
@@ -166,15 +158,7 @@ class Critic(nn.Module):
 
 
 class SACAgent:
-    """
-    SAC Agent
-
-    Args:
-        encoder_factory: PointNavEncoder を返す
-        action_dim:      行動次元数
-        cfg:             TrainConfig
-        device:          "cuda" or "cpu"
-    """
+    """SAC Agent（encoder_factory: PointNavEncoder を返す, action_dim: 行動次元数, cfg: TrainConfig, device: "cuda" or "cpu"）"""
 
     def __init__(self, encoder_factory, action_dim: int, cfg: Any, device: str):
         self.device = device

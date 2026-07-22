@@ -25,6 +25,12 @@ parser.add_argument(
 parser.add_argument(
     "--vis-goal", action="store_true", default=False, help="スポーン(青)・ゴール(赤)地点に半透明の円を表示"
 )
+parser.add_argument(
+    "--reset",
+    action="store_true",
+    default=False,
+    help="衝突/成功/タイムアウトで自動リセットする (指定しない場合は R キーのみで手動リセット)",
+)
 args = parser.parse_args()
 
 from isaacsim import SimulationApp
@@ -157,16 +163,6 @@ def main():
         )
 
         pos = env._get_robot_pos()
-        goal = env._goal_pos
-        dist_xy = float(np.linalg.norm(goal[[0, 1]] - pos[[0, 1]]))
-        goal_vec = env._compute_goal_vec()
-        angle_rel_deg = float(goal_vec[1]) * 180.0
-        w, qx, qy, qz = env._get_robot_quat()
-        yaw_deg = float(
-            np.degrees(
-                np.arctan2(2.0 * (w * qz + qx * qy), 1.0 - 2.0 * (qy**2 + qz**2))
-            )
-        )
 
         if args.num_humans > 0:
             nearest = None
@@ -200,9 +196,17 @@ def main():
                 f"wall={'YES' if wall else 'no '}",
                 end="\r",
             )
-            # 衝突しても自動リセットしない (押し当てて観察できるように), R で手動リセット
-            step += 1
         else:
+            goal = env._goal_pos
+            dist_xy = float(np.linalg.norm(goal[[0, 1]] - pos[[0, 1]]))
+            goal_vec = env._compute_goal_vec()
+            angle_rel_deg = float(goal_vec[1]) * 180.0
+            w, qx, qy, qz = env._get_robot_quat()
+            yaw_deg = float(
+                np.degrees(
+                    np.arctan2(2.0 * (w * qz + qx * qy), 1.0 - 2.0 * (qy**2 + qz**2))
+                )
+            )
             print(
                 "\x1b[K"
                 f"[step {step:4d}] "
@@ -214,16 +218,16 @@ def main():
                 end="\r",
             )
 
-            if terminated or truncated:
-                print()
-                print(f"[Teleop] episode end — {info}")
-                env.reset()
-                if args.vis_goal:
-                    _update_marker(spawn_marker, env._get_robot_pos())
-                    _update_marker(goal_marker, env._goal_pos)
-                step = 0
-            else:
-                step += 1
+        if (terminated or truncated) and args.reset:
+            print()
+            print(f"[Teleop] episode end — {info}")
+            env.reset()
+            if args.vis_goal:
+                _update_marker(spawn_marker, env._get_robot_pos())
+                _update_marker(goal_marker, env._goal_pos)
+            step = 0
+        else:
+            step += 1
 
     env.close()
     app.close()

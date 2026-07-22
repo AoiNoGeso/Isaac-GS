@@ -98,8 +98,7 @@ class PointNavIsaacEnv:
         physics_scene.CreateGravityDirectionAttr().Set(Gf.Vec3f(0.0, 0.0, -1.0))
         physics_scene.CreateGravityMagnitudeAttr().Set(9.81)
 
-        # 床/壁のPhysicsMaterialが無摩擦(0.0)のまま生成されているステージ対策
-        # 傾斜での横滑りを防ぐため摩擦係数をここで上書き(stage.usda再生成は不要)
+        # 無摩擦(0.0)ステージ対策, 横滑り防止のため摩擦係数を上書き
         env_mat_prim = stage.GetPrimAtPath("/World/env/PhysicsMaterial")
         if env_mat_prim.IsValid():
             env_mat = UsdPhysics.MaterialAPI(env_mat_prim)
@@ -149,7 +148,6 @@ class PointNavIsaacEnv:
             for k, v in zip(bake_keys, bake_orig):
                 if v is not None:
                     settings.set(k, v)
-        self._world.step(render=False)
 
         self._robot = Articulation(prim_paths_expr=robot.prim_path)
         self._robot.initialize()
@@ -358,17 +356,14 @@ class PointNavIsaacEnv:
                 motion_library_prim_path=MOTION_LIBRARY_PRIM_PATH,
                 motion_library_skeleton_rig="Human",
             )
-            await app.next_update_async()
 
             # キャラクター自身の体がnavmeshの障害物として扱われるのを防ぐ
             if not skelroot.HasAPI(NavSchema.NavMeshExcludeAPI):
                 omni.kit.commands.execute(
                     "ApplyNavMeshAPICommand", prim_path=skelroot.GetPath(), api=NavSchema.NavMeshExcludeAPI
                 )
-                await app.next_update_async()
 
             skelroot.ApplyAPI(IRA_CHARACTER_API)
-            await app.next_update_async()
 
             skelroot.GetAttribute(METRO_AGENT_NAME).Set(f"human_{i}")
             skelroot.GetAttribute(METRO_AGENT_GROUP).Set("humans")

@@ -21,14 +21,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_gs.add_argument("-i", "--input_dir", required=True, help="Input directory path")
     p_gs.add_argument("-o", "--output_dir", required=True, help="Output directory path")
     p_gs.add_argument(
-        "--source-up-axis", choices=["Y", "Z", "Yinv"], default="Y", help="変換元データの up-axis (default: Y)"
+        "--source-up-axis", choices=["Y"], default="Y", help="変換元データの up-axis (default: Y)"
     )
 
     p_mesh = sub.add_parser("convert-mesh", help="メッシュ -> USD 変換 + Z-up 回転焼き込み")
     p_mesh.add_argument("-i", "--input", required=True, help="Input mesh file path (PLY, OBJ, etc.)")
     p_mesh.add_argument("-o", "--output", required=True, help="Output USD file path (e.g. floor_mesh.usd)")
     p_mesh.add_argument(
-        "--source-up-axis", choices=["Y", "Z", "Yinv"], default="Y", help="変換元データの up-axis (default: Y)"
+        "--source-up-axis", choices=["Y"], default="Y", help="変換元データの up-axis (default: Y)"
     )
 
     p_compose = sub.add_parser("compose", help="gs.usdc/floor_mesh.usd/wall_mesh.usd を統合し stage.usda を生成")

@@ -1,14 +1,8 @@
-"""
-Point Navigation テストスクリプト
-
-実行方法:
-  cd ~/Programs/Isaac-GS
-  uv run models/sac/test.py --model runs/PointNav-RGB+Goal/0626/sac_final.pt --stage-index 0
-  uv run models/sac/test.py --model path/to/sac_final.pt --stage-index 0 --num-humans 2
-"""
+"""Point Navigation テストスクリプト。実行例: uv run models/sac/test.py --model path/to/sac_final.pt --stage-index 0 [--num-humans N]"""
 
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -17,8 +11,6 @@ from pydantic import BaseModel
 class TestCfg(BaseModel):
     model_path: str = "checkpoints/sac_final.pt"
     episodes_per_stage: int = 100
-    input_rgb: bool = True
-    input_goal: bool = True
 
 
 parser = argparse.ArgumentParser()
@@ -28,6 +20,12 @@ parser.add_argument(
     "--stage-index", type=int, default=0, help="評価するステージのインデックス"
 )
 parser.add_argument("--num-humans", type=int, default=0)
+parser.add_argument(
+    "--video", action="store_true", default=False, help="各エピソードの映像をmp4で保存する"
+)
+parser.add_argument(
+    "--video-dir", type=str, default="videos", help="動画の出力先ディレクトリ (default: videos)"
+)
 args = parser.parse_args()
 
 from isaacsim import SimulationApp
@@ -40,6 +38,7 @@ omni.log.get_log().set_channel_level(
     "omni.physx.plugin", omni.log.Level.ERROR, omni.log.SettingBehavior.OVERRIDE
 )
 
+import cv2
 import numpy as np
 import torch
 from tqdm import tqdm
@@ -56,6 +55,12 @@ from models.sac.policy import SACAgent
 from utils.wandb_utils import EpisodeTracker
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def _write_frame(writer: cv2.VideoWriter, rgb: np.ndarray) -> None:
+    """rgb: (3,H,W) float32 [0,1] -> BGR uint8 (H,W,3) をvideo writerへ書き込む"""
+    frame = (rgb.transpose(1, 2, 0) * 255.0).clip(0, 255).astype(np.uint8)
+    writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
 
 
 def main():
@@ -79,10 +84,7 @@ def main():
     print(f"[test] Episodes: {test_cfg.episodes_per_stage}")
     print(f"[test] num_humans: {args.num_humans}")
 
-    model_cfg = ModelConfig(
-        input_rgb=test_cfg.input_rgb,
-        input_goal=test_cfg.input_goal,
-    )
+    model_cfg = ModelConfig()
     env_cfg = EnvConfig(
         stage_path=stage_cfg.stage_path,
         fixed_spawn_pos=stage_cfg.fixed_spawn_pos,
@@ -105,8 +107,17 @@ def main():
     )
     agent.load(test_cfg.model_path)
 
+    video_dir = None
+    if args.video:
+        timestamp = datetime.now().strftime("%m%d%H%M%S")
+        video_dir = Path(args.video_dir) / stage_names[args.stage_index] / timestamp
+        video_dir.mkdir(parents=True, exist_ok=True)
+        video_fps = 1.0 / env_cfg.rendering_dt
+        print(f"[test] video: enabled -> {video_dir}/")
+
     successes = 0
     collisions = 0
+    wall_collisions = 0
     human_collisions = 0
     timeouts = 0
     total_reward = 0.0
@@ -121,10 +132,23 @@ def main():
         path_len = 0.0
         prev_xy = None
 
+        video_writer = None
+        video_path = None
+        if video_dir is not None:
+            H, W = env_cfg.camera_resolution[1], env_cfg.camera_resolution[0]
+            video_path = video_dir / f"ep{ep:04d}.mp4"
+            video_writer = cv2.VideoWriter(
+                str(video_path), cv2.VideoWriter_fourcc(*"mp4v"), video_fps, (W, H)
+            )
+            _write_frame(video_writer, obs["rgb"])
+
         while True:
             action = agent.act(obs, deterministic=True)
             obs, reward, terminated, truncated, info = env.step(action)
             ep_reward += reward
+
+            if video_writer is not None:
+                _write_frame(video_writer, obs["rgb"])
 
             xy = info.get("robot_xz")
             if xy is not None and prev_xy is not None:
@@ -137,12 +161,26 @@ def main():
         success = bool(info.get("success", False))
         collision = bool(info.get("collision", False))
         human_collision = bool(info.get("human_collision", False))
+        wall_collision = collision and not human_collision
         timeout = bool(info.get("timeout", False))
         dist_final = float(info.get("dist", 0.0))
         spl = EpisodeTracker.compute_spl(success, init_dist, path_len)
 
+        if video_writer is not None:
+            video_writer.release()
+            if success:
+                suffix = "_s"
+            elif human_collision:
+                suffix = "_h"
+            elif wall_collision:
+                suffix = "_w"
+            else:
+                suffix = "_t"
+            video_path.rename(video_path.with_stem(video_path.stem + suffix))
+
         successes += int(success)
         collisions += int(collision)
+        wall_collisions += int(wall_collision)
         human_collisions += int(human_collision)
         timeouts += int(timeout)
         total_reward += ep_reward
@@ -151,7 +189,8 @@ def main():
 
         pbar.set_postfix(
             success=f"{successes}/{ep + 1}",
-            collision=f"{collisions}/{ep + 1}",
+            wall=f"{wall_collisions}/{ep + 1}",
+            human=f"{human_collisions}/{ep + 1}",
         )
 
     n = test_cfg.episodes_per_stage
@@ -161,6 +200,10 @@ def main():
     tqdm.write(f"Episodes      : {n}", file=_OUT)
     tqdm.write(f"Success Rate  : {successes / n:.3f}  ({successes}/{n})", file=_OUT)
     tqdm.write(f"Collision Rate: {collisions / n:.3f}  ({collisions}/{n})", file=_OUT)
+    tqdm.write(
+        f"Wall Collision Rate : {wall_collisions / n:.3f}  ({wall_collisions}/{n})",
+        file=_OUT,
+    )
     tqdm.write(
         f"Human Collision Rate: {human_collisions / n:.3f}  ({human_collisions}/{n})",
         file=_OUT,
