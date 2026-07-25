@@ -1,4 +1,5 @@
-"""Point Navigation デプロイスクリプト (ROS2 policy ノード): sim_ros2_bridge.py 等と組み合わせ, TF (map→base_footprint) からロボット位置, /goal_pose (map フレーム, 変換不要) からゴールを取得し /cmd_vel を発行する (購読: /camera/camera/color/image_raw, /goal_pose; 実行例: python3 deploy/deploy.py --model runs/point_nav/sac_final.pt)."""
+"""Point Navigation 実機デプロイ用ROS2ノード。
+実行例: python3 deploy/deploy.py --model runs/point_nav/sac_final.pt"""
 
 import argparse
 import sys
@@ -18,12 +19,11 @@ from envs.config import JACKAL
 from envs.geometry import goal_vec, quat_to_yaw
 from models.sac.policy import SACAgent
 
-# 定数 (シミュレータの envs.config.JACKAL と合わせること)
-
+# シミュレータのenvs.config.JACKALと値を揃えること
 _IMG_SIZE = 84
-_V_MAX = JACKAL.v_linear_max  # [m/s]  実機に合わせて調整
-_W_MAX = JACKAL.v_angular_max  # [rad/s]
-_GOAL_THRESHOLD = 0.4  # [m]
+_V_MAX = JACKAL.v_linear_max  # 最大直進速度 [m/s]
+_W_MAX = JACKAL.v_angular_max  # 最大角速度 [rad/s]
+_GOAL_THRESHOLD = 0.4  # ゴール到達判定の距離 [m]
 
 
 def _parse_args():
@@ -35,9 +35,9 @@ def _parse_args():
     p.add_argument("--hz", type=float, default=10.0, help="制御周期 [Hz]")
     p.add_argument(
         "--input-goal",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         default=True,
-        help="ゴールベクトルを観測に含める（RGB+Goalモデル用）",
+        help="ゴールベクトルを観測に含める（RGB+Goalモデル用）。--no-input-goal で無効化",
     )
     return p.parse_args()
 
@@ -55,7 +55,7 @@ class PointNavDeployNode(Node):
         self._input_goal = input_goal
         self._lock = threading.Lock()
 
-        # TF バッファ (map→base_footprint の自己位置推定を参照)
+        # map→base_footprint の自己位置推定をTFから取得する
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
 
@@ -63,7 +63,7 @@ class PointNavDeployNode(Node):
         self._robot_x: float = 0.0
         self._robot_y: float = 0.0
         self._robot_yaw: float = 0.0
-        self._goal: tuple[float, float] | None = None  # (x, y) in map frame
+        self._goal: tuple[float, float] | None = None  # mapフレームでの(x, y)
 
         self.create_subscription(
             Image, "/camera/camera/color/image_raw", self._cb_image, 1
@@ -82,12 +82,11 @@ class PointNavDeployNode(Node):
     def _cb_image(self, msg: Image):
         """カメラ画像を受信し RGB に変換, リサイズする"""
         try:
-            # sensor_msgs/Image → numpy (H, W, C)
             dtype = np.uint8
             raw = np.frombuffer(msg.data, dtype=dtype).reshape(
                 msg.height, msg.width, -1
             )
-            # encoding に応じて RGB に変換
+            # encodingに応じてRGB順へ変換
             if msg.encoding in ("rgb8",):
                 rgb = raw[..., :3]
             elif msg.encoding in ("bgr8",):
@@ -98,12 +97,11 @@ class PointNavDeployNode(Node):
                 rgb = raw[..., 2::-1]
             else:
                 rgb = raw[..., :3]
-            # 84x84 にリサイズ (NumPy のみ, バイリニア近似)
             if rgb.shape[0] != _IMG_SIZE or rgb.shape[1] != _IMG_SIZE:
                 from PIL import Image as PILImage
 
                 rgb = np.array(PILImage.fromarray(rgb).resize((_IMG_SIZE, _IMG_SIZE)))
-            arr = (rgb.astype(np.float32) / 255.0).transpose(2, 0, 1)  # (3,84,84)
+            arr = (rgb.astype(np.float32) / 255.0).transpose(2, 0, 1)
             with self._lock:
                 self._rgb = arr
         except Exception as e:
@@ -122,7 +120,7 @@ class PointNavDeployNode(Node):
                 self._robot_y = t.y
                 self._robot_yaw = quat_to_yaw(q.w, q.x, q.y, q.z)
         except Exception:
-            pass  # TF がまだ利用できない場合は前回値を保持
+            pass  # TFが未取得の間は前回値を保持
 
     def _cb_goal(self, msg: PoseStamped):
         """RViz2 からゴール位置を受信する"""
@@ -158,7 +156,6 @@ class PointNavDeployNode(Node):
 
         gvec = goal_vec(robot_x, robot_y, robot_yaw, goal_x, goal_y)
 
-        # input_goal=False の場合は "goal" キーを含めない
         obs = {"rgb": rgb}
         if self._input_goal:
             obs["goal"] = gvec
@@ -193,7 +190,7 @@ def main():
     model = SACAgent(
         encoder_factory=lambda: make_encoder(model_cfg, img_size=_IMG_SIZE),
         action_dim=2,
-        cfg=TrainConfig(),
+        cfg=TrainConfig(stage="unused"),  # 実機デプロイではstage(シミュレータ用ステージ名)は使わない
         device=device,
     )
     model.load(args.model)

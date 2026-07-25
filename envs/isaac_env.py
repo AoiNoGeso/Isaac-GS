@@ -6,17 +6,15 @@ from gymnasium import spaces
 
 from envs.config import EnvConfig, RobotConfig
 from envs.geometry import goal_vec, quat_to_yaw
-
-# IRA (isaacsim.replicator.agent) 人物キャラ
-MOTION_LIBRARY_PRIM_PATH = "/World/HumanMotionLibrary"
-HUMANS_ROOT = "/World/Humans"
-CHAR_ASSET_DIR = "Isaac/People/Characters/"
+from envs.humans.ira import HUMANS_ROOT, IRAHumanManager
 
 # 落下判定
 FALL_Z_THRESHOLD = -50.0
 
 
 class PointNavIsaacEnv:
+    """Isaac Sim上でロボットを操作するPoint Navigation環境本体"""
+
     def __init__(self, env_cfg: EnvConfig):
         self.env_cfg = env_cfg
         self.robot_cfg: RobotConfig = env_cfg.robot
@@ -24,7 +22,37 @@ class PointNavIsaacEnv:
         self._goal_pos = np.zeros(3, dtype=np.float32)
         self._prev_dist = 0.0
         self._ira_characters: list = []
+        self._last_omega = 0.0
+        self._contact_bodies_error_logged = False
+        self._velocity_explosion_error_logged = False
         self._setup()
+
+    # ------------------------------------------------------------------
+    # 公開アクセサ
+    # ------------------------------------------------------------------
+    @property
+    def robot_pos(self) -> np.ndarray:
+        return self._get_robot_pos()
+
+    @property
+    def robot_quat(self) -> tuple[float, float, float, float]:
+        return self._get_robot_quat()
+
+    @property
+    def goal_pos(self) -> np.ndarray:
+        return self._goal_pos
+
+    @property
+    def goal_vec(self) -> np.ndarray:
+        return self._compute_goal_vec()
+
+    @property
+    def characters(self) -> list:
+        return self._ira_characters
+
+    @property
+    def initial_goal_dist(self) -> float:
+        return self._prev_dist
 
     # ------------------------------------------------------------------
     # セットアップ
@@ -197,8 +225,9 @@ class PointNavIsaacEnv:
         if self.env_cfg.show_camera_viewport:
             self._setup_camera_viewport()
 
+        self._human_mgr = IRAHumanManager(self.env_cfg, self._world, self._inav)
         if self.env_cfg.num_humans > 0:
-            self._ira_characters = self._inject_ira_humans(stage)
+            self._ira_characters = self._human_mgr.inject_ira_humans(stage)
         else:
             self._ira_characters = []
 
@@ -214,242 +243,10 @@ class PointNavIsaacEnv:
             carb.log_warn(f"[PointNavIsaacEnv] Camera viewport window skipped: {e}")
 
     # ------------------------------------------------------------------
-    # IRA 人物キャラ注入
-    # ------------------------------------------------------------------
-    def _resolve_character_urls(self, num: int, seed: int = 0) -> list[str]:
-        """Isaac/People/Characters/ から <name>/<name>.usd を num 体分(seedでシャッフル)返す"""
-        import carb
-        import omni.client
-        from omni.metropolis.utils.isaac_sim_util import resolve_asset_path
-
-        base = resolve_asset_path(CHAR_ASSET_DIR)
-        result, entries = omni.client.list(base)
-        if result != omni.client.Result.OK or not entries:
-            carb.log_error(f"[PointNavIsaacEnv] キャラクター一覧の取得に失敗: {base}")
-            return []
-
-        urls: list[str] = []
-        for e in entries:
-            rel = e.relative_path.rstrip("/")
-            candidate = f"{base.rstrip('/')}/{rel}/{rel}.usd"
-            r, _ = omni.client.stat(candidate)
-            if r == omni.client.Result.OK:
-                urls.append(candidate)
-
-        if not urls:
-            carb.log_error(f"[PointNavIsaacEnv] 有効なキャラクターUSDが見つかりません: {base}")
-            return []
-
-        rng = np.random.default_rng(seed)
-        rng.shuffle(urls)
-        return [urls[i % len(urls)] for i in range(num)]
-
-    def _sample_navmesh_point_for_human(self, z_offset: float = 0.0) -> np.ndarray | None:
-        """NavMesh上のランダム点を返す(人物の足元z, オフセット任意)"""
-        nm = self._inav.get_navmesh()
-        if nm is None:
-            return None
-        for _ in range(20):
-            p = nm.query_random_point()
-            if p is None:
-                continue
-            pos = np.array([p[0], p[1], p[2]], dtype=np.float32)
-            if np.all(np.isfinite(pos)):
-                pos[2] += z_offset
-                return pos
-        return None
-
-    async def _ira_setup_async(self, stage):
-        import carb
-        import BehaviorSchema
-        import NavSchema
-        import omni.kit.app
-        import omni.kit.commands
-        import omni.usd
-        from isaacsim.replicator.agent.schema import (
-            IRA_CHARACTER_API,
-            WANDER_PRIM_TYPE,
-            WANDER_WALK_DISTANCE_RANGE,
-            WANDER_WALK_SPEED_RANGE,
-        )
-        from omni.metropolis.pipeline.usd_util import set_prim_pos
-        from omni.metropolis.schema import (
-            METRO_AGENT_GROUP,
-            METRO_AGENT_NAME,
-            METRO_AGENT_ROUTINES,
-            METRO_AGENT_SEED,
-        )
-        from omni.metropolis.utils.isaac_sim_util import resolve_asset_path
-        from pxr import Gf, Usd, UsdSkel
-
-        app = omni.kit.app.get_app()
-        ctx = omni.usd.get_context()
-
-        num_humans = self.env_cfg.num_humans
-        speed_range = self.env_cfg.human_speed_range
-        distance_range = self.env_cfg.human_distance_range
-        seed = self.env_cfg.human_seed
-
-        # MotionLibraryはpayload arcで1回だけロードする(reference arcはretargetを壊す)
-        motion_library_url = resolve_asset_path(
-            "Isaac/People/MotionLibrary/HumanMotionLibrary.usd"
-        )
-        omni.kit.commands.execute(
-            "CreatePayload",
-            usd_context=ctx,
-            path_to=MOTION_LIBRARY_PRIM_PATH,
-            asset_path=motion_library_url,
-        )
-        # BehaviorMotionLibrary型に合成されるまで待つ
-        for _ in range(300):
-            await app.next_update_async()
-            ml = stage.GetPrimAtPath(MOTION_LIBRARY_PRIM_PATH)
-            if ml.IsValid() and ml.IsA(BehaviorSchema.BehaviorMotionLibrary):
-                break
-        else:
-            carb.log_error("[PointNavIsaacEnv] MotionLibrary のロードに失敗")
-            return []
-
-        char_urls = self._resolve_character_urls(num_humans, seed=seed)
-        if not char_urls:
-            return []
-
-        # 親スコープを先に作成(未作成のネストパスへCreatePayloadすると合成されない)
-        if not stage.GetPrimAtPath(HUMANS_ROOT).IsValid():
-            stage.DefinePrim(HUMANS_ROOT, "Xform")
-
-        skelroot_paths: list[str] = []
-        for i, char_url in enumerate(char_urls):
-            char_prim_path = f"{HUMANS_ROOT}/Human_{i}"
-            omni.kit.commands.execute(
-                "CreatePayload",
-                usd_context=ctx,
-                path_to=char_prim_path,
-                asset_path=char_url,
-            )
-
-            # payloadの合成待ち: SkelRootが現れるまでポーリング
-            skelroot = None
-            for _ in range(600):
-                await app.next_update_async()
-                char_prim = stage.GetPrimAtPath(char_prim_path)
-                if char_prim.IsValid():
-                    skelroot = next(
-                        (p for p in Usd.PrimRange(char_prim) if p.IsA(UsdSkel.Root)),
-                        None,
-                    )
-                    if skelroot is not None:
-                        break
-            if skelroot is None:
-                carb.log_warn(f"[PointNavIsaacEnv] Human_{i} SkelRoot 未検出, スキップ")
-                continue
-
-            char_prim = stage.GetPrimAtPath(char_prim_path)
-            pt = self._sample_navmesh_point_for_human()
-            if pt is not None:
-                set_prim_pos(char_prim, Gf.Vec3f(float(pt[0]), float(pt[1]), float(pt[2])))
-
-            # BehaviorAgentAPI(payload arc + このコマンドでretargetが正常動作)
-            omni.kit.commands.execute(
-                "ApplyBehaviorAgentAPICommand",
-                skelroot_prim_paths=[skelroot.GetPath()],
-                motion_library_prim_path=MOTION_LIBRARY_PRIM_PATH,
-                motion_library_skeleton_rig="Human",
-            )
-
-            # キャラクター自身の体がnavmeshの障害物として扱われるのを防ぐ
-            if not skelroot.HasAPI(NavSchema.NavMeshExcludeAPI):
-                omni.kit.commands.execute(
-                    "ApplyNavMeshAPICommand", prim_path=skelroot.GetPath(), api=NavSchema.NavMeshExcludeAPI
-                )
-
-            skelroot.ApplyAPI(IRA_CHARACTER_API)
-
-            skelroot.GetAttribute(METRO_AGENT_NAME).Set(f"human_{i}")
-            skelroot.GetAttribute(METRO_AGENT_GROUP).Set("humans")
-            skelroot.GetAttribute(METRO_AGENT_SEED).Set(int(seed) + i)
-
-            # Wander behavior(idle属性は付けない, 付けるとランタイムが壊れる)
-            wander = stage.DefinePrim(f"{skelroot.GetPath()}/behavior_01", WANDER_PRIM_TYPE)
-            wander.GetAttribute(WANDER_WALK_SPEED_RANGE).Set(Gf.Vec2f(*speed_range))
-            wander.GetAttribute(WANDER_WALK_DISTANCE_RANGE).Set(Gf.Vec2f(*distance_range))
-            skelroot.GetRelationship(METRO_AGENT_ROUTINES).SetTargets([wander.GetPath()])
-            await app.next_update_async()
-
-            skelroot_paths.append(str(skelroot.GetPath()))
-
-        return skelroot_paths
-
-    def _inject_ira_humans(self, stage, collect_timeout: int = 600) -> list:
-        """人物キャラをstageに注入し, timeline.play()後にIRA_Characterのリストを返す"""
-        import asyncio
-
-        import carb
-        import omni.kit.app
-        import omni.timeline
-
-        if self.env_cfg.num_humans <= 0:
-            return []
-
-        from isaacsim.replicator.agent.core.character import IRA_Character
-        from omni.metropolis.pipeline.agent import AgentsManager
-
-        app = omni.kit.app.get_app()
-        timeline = omni.timeline.get_timeline_interface()
-
-        # キャラ設定はtimeline停止状態で行う(再生状態だとretarget/behaviorランタイムが競合する)
-        timeline.stop()
-        for _ in range(3):
-            app.update()
-
-        fut = asyncio.ensure_future(self._ira_setup_async(stage))
-        while not fut.done():
-            app.update()
-        if fut.exception():
-            raise fut.exception()
-        skelroot_paths = fut.result()
-        if not skelroot_paths:
-            carb.log_error("[PointNavIsaacEnv] 有効な人物キャラが1体もセットアップできませんでした")
-            return []
-
-        # timeline再生 → AgentsManager収集, physicsとtimelineを同時進行させる
-        pump = lambda: self._world.step(render=True)
-        timeline.play()
-        for _ in range(10):
-            pump()
-
-        manager = AgentsManager.get_instance()
-        waited = 0
-        while not manager.is_runtime_agents_collect_done():
-            pump()
-            waited += 1
-            if waited > collect_timeout:
-                carb.log_warn("[PointNavIsaacEnv] AgentsManager 収集タイムアウト")
-                break
-
-        return manager.get_agents_by_type(IRA_Character)
-
-    def _relocate_human(self, character, pt: np.ndarray) -> None:
-        """人物をptへ再配置する"""
-        import carb
-
-        bh = character.get_bh_agent()
-        if bh is None:
-            return
-        bh.teleport(target=carb.Float3(float(pt[0]), float(pt[1]), float(pt[2])), facing=None)
-
-    def _reset_humans(self):
-        """各人物をNavMesh上の新しいランダム点へ再配置する"""
-        for character in self._ira_characters:
-            pt = self._sample_navmesh_point_for_human()
-            if pt is not None:
-                self._relocate_human(character, pt)
-        self._world.step(render=False)
-
-    # ------------------------------------------------------------------
     # reset / step
     # ------------------------------------------------------------------
     def reset(self) -> dict:
+        """ロボット・ゴール・人物キャラを新しいエピソード用に配置し初期観測を返す"""
         self._step_count = 0
         self._last_omega = 0.0
 
@@ -498,11 +295,12 @@ class PointNavIsaacEnv:
         self._world.step(render=True)
 
         if self._ira_characters:
-            self._reset_humans()
+            self._human_mgr.reset_humans(self._ira_characters)
 
         return self._get_obs()
 
     def step(self, action: np.ndarray) -> tuple[dict, float, bool, bool, dict]:
+        """行動[v_x, ω]を1ステップ実行し(obs, reward, terminated, truncated, info)を返す"""
         robot = self.robot_cfg
         v_x = float(np.clip(action[0], -1.0, 1.0)) * robot.v_linear_max
         omega = float(np.clip(action[1], -1.0, 1.0)) * robot.v_angular_max
@@ -542,7 +340,7 @@ class PointNavIsaacEnv:
                         "timeout": False,
                         "dist": dist,
                         "dist_final": dist,
-                        "robot_xz": pos[[0, 1]],
+                        "robot_xz": pos[[0, 1]],  # 実際はXY座標
                     },
                 )
                 break
@@ -569,7 +367,7 @@ class PointNavIsaacEnv:
                         "timeout": False,
                         "dist": dist,
                         "dist_final": dist,
-                        "robot_xz": pos[[0, 1]],
+                        "robot_xz": pos[[0, 1]],  # 実際はXY座標
                     },
                 )
                 break
@@ -589,7 +387,8 @@ class PointNavIsaacEnv:
 
         hc = human_hit or self._check_human_contact()
         info["human_collision"] = hc
-        if hc and not terminated:
+        if hc and not info["success"]:
+            # 壁衝突等と同時発生時は人物衝突を優先(ゴール到達時のみ上書きしない)
             reward = float(self.env_cfg.r_human_collision)
             terminated = True
             truncated = False
@@ -598,6 +397,7 @@ class PointNavIsaacEnv:
         return obs, reward, terminated, truncated, info
 
     def _get_obs(self) -> dict:
+        """rgb/depth/goalの3キーからなる観測を生成する"""
         rgb, depth = self._camera.get_rgbd()
         return {
             "rgb": (rgb.astype(np.float32) / 255.0).transpose(2, 0, 1),
@@ -606,19 +406,21 @@ class PointNavIsaacEnv:
         }
 
     def _compute_goal_vec(self) -> np.ndarray:
+        """ロボットから見たゴールまでの[距離, 相対角度/π]を計算する"""
         pos = self._get_robot_pos()
         w, qx, qy, qz = self._get_robot_quat()
         yaw = quat_to_yaw(w, qx, qy, qz)
         return goal_vec(pos[0], pos[1], yaw, self._goal_pos[0], self._goal_pos[1])
 
     def _compute_reward(self) -> tuple[float, dict]:
+        """今フレームの報酬とinfo(success/collision等)を計算する"""
         pos = self._get_robot_pos()
         cur_dist = float(np.linalg.norm(self._goal_pos[[0, 1]] - pos[[0, 1]]))
         success = cur_dist < self.env_cfg.goal_threshold
         collision = self._check_collision()
         rollover = self._check_rollover()
         angle_rel = float(self._compute_goal_vec()[1]) * np.pi
-        omega = getattr(self, "_last_omega", 0.0)
+        omega = self._last_omega
         reward = (
             self.env_cfg.r_dist * (self._prev_dist - cur_dist)
             + self.env_cfg.r_heading * float(np.cos(angle_rel))
@@ -635,14 +437,16 @@ class PointNavIsaacEnv:
             "timeout": False,
             "dist": cur_dist,
             "dist_final": cur_dist,
-            "robot_xz": pos[[0, 1]],
+            "robot_xz": pos[[0, 1]],  # 実際はXY座標
         }
 
     def _check_rollover(self) -> bool:
+        """ロボットが転倒しているかを姿勢から判定する"""
         w, qx, qy, qz = self._get_robot_quat()
         return float(1.0 - 2.0 * (qx * qx + qy * qy)) < self.robot_cfg.rollover_threshold
 
     def _check_velocity_explosion(self) -> bool:
+        """物理演算が破綻して速度や位置が異常値になっていないか確認する"""
         try:
             linvel = self._robot.get_linear_velocities()
             if linvel is not None and float(np.max(np.abs(linvel))) > 10.0:
@@ -650,10 +454,15 @@ class PointNavIsaacEnv:
             if not all(np.isfinite(self._get_robot_pos())):
                 return True
         except Exception:
-            pass
+            if not self._velocity_explosion_error_logged:
+                import carb
+
+                carb.log_error("[PointNavIsaacEnv] _check_velocity_explosion で例外発生")
+                self._velocity_explosion_error_logged = True
         return False
 
     def _contact_bodies(self) -> list[tuple[str, str]]:
+        """ロボットの接触センサーが検知した接触相手のprimパス一覧を返す"""
         from pxr import PhysicsSchemaTools
 
         try:
@@ -665,15 +474,22 @@ class PointNavIsaacEnv:
                 for contact in self._contact_sensor.get_raw_data()
             ]
         except Exception:
+            if not self._contact_bodies_error_logged:
+                import carb
+
+                carb.log_error("[PointNavIsaacEnv] _contact_bodies で例外発生")
+                self._contact_bodies_error_logged = True
             return []
 
     def _check_wall_contact(self) -> bool:
+        """壁と接触しているか判定する"""
         return any(
             "wall_mesh" in body0 or "wall_mesh" in body1
             for body0, body1 in self._contact_bodies()
         )
 
     def _check_human_contact(self) -> bool:
+        """人物との接触判定。接触センサーに加え、距離ベースでも判定する"""
         if not self._ira_characters:
             return False
         if any(
@@ -692,6 +508,7 @@ class PointNavIsaacEnv:
         return False
 
     def _check_collision(self) -> bool:
+        """壁衝突または落下による衝突判定(エピソード開始直後は猶予)"""
         if self._step_count < self.env_cfg.collision_grace_steps:
             return False
         if self._check_wall_contact():
@@ -700,6 +517,7 @@ class PointNavIsaacEnv:
         return float(pos[2]) < FALL_Z_THRESHOLD
 
     def _recover_physics(self):
+        """物理演算破綻からの復帰。安全な位置へテレポートし直す"""
         safe_pos = self._sample_navmesh_point()
         if not np.all(np.isfinite(safe_pos)):
             safe_pos = self._get_robot_pos()
@@ -710,6 +528,7 @@ class PointNavIsaacEnv:
                 break
 
     def _sample_navmesh_point(self) -> np.ndarray:
+        """NavMesh上のランダムな点を返す(ロボットのスポーン/ゴール用)"""
         nm = self._inav.get_navmesh()
         if nm is not None:
             for _ in range(20):
@@ -721,6 +540,7 @@ class PointNavIsaacEnv:
         return np.zeros(3, dtype=np.float32)
 
     def _teleport_robot(self, pos: np.ndarray, yaw: float | None = None):
+        """ロボットを指定位置・向きへ瞬間移動させ、速度をリセットする"""
         if yaw is None:
             if self.env_cfg.fixed_spawn_yaw_deg is not None:
                 yaw = float(np.radians(self.env_cfg.fixed_spawn_yaw_deg))
@@ -761,16 +581,20 @@ class PointNavIsaacEnv:
 class PointNavGymEnv(gym.Env):
     """gymnasium.Envラッパー, RGB・Depth・goalを発行"""
 
-    def __init__(self, env_cfg: EnvConfig | None = None):
+    def __init__(self, env_cfg: EnvConfig):
         super().__init__()
-        self.env_cfg = env_cfg or EnvConfig()
+        self.env_cfg = env_cfg
         W, H = self.env_cfg.camera_resolution
 
         self.observation_space = spaces.Dict(
             {
                 "rgb": spaces.Box(0.0, 1.0, shape=(3, H, W), dtype=np.float32),
                 "depth": spaces.Box(0.0, np.inf, shape=(1, H, W), dtype=np.float32),
-                "goal": spaces.Box(-1.0, 1.0, shape=(2,), dtype=np.float32),
+                "goal": spaces.Box(
+                    low=np.array([0.0, -1.0], dtype=np.float32),
+                    high=np.array([np.inf, 1.0], dtype=np.float32),
+                    dtype=np.float32,
+                ),
             }
         )
         self.action_space = spaces.Box(-1.0, 1.0, shape=(2,), dtype=np.float32)
@@ -781,10 +605,12 @@ class PointNavGymEnv(gym.Env):
             self._env = PointNavIsaacEnv(self.env_cfg)
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
+        """`seed`は無視される(NavMeshのランダムサンプリングはPythonから制御不能なため、
+        完全な再現性は保証されない)。"""
         super().reset(seed=seed)
         self._lazy_init()
         obs = self._env.reset()
-        info = {"dist": float(self._env._prev_dist)}
+        info = {"dist": float(self._env.initial_goal_dist)}
         return obs, info
 
     def step(self, action: np.ndarray):

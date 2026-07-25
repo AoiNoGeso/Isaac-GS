@@ -1,3 +1,3 @@
-from utils.wandb_utils import EpisodeTracker
+from utils.metrics import EpisodeTracker
 
 __all__ = ["EpisodeTracker"]

@@ -28,21 +28,31 @@ class ReplayBuffer:
         obs_spec: dict[str, tuple[int, ...]],
         action_dim: int,
         device: str,
+        obs_dtypes: dict[str, type] | None = None,
     ):
+        """obs_dtypesでnp.uint8を指定したキーは[0,1]のfloatとして受け取り、
+        内部ではuint8で保持してメモリを節約する(sample()で[0,1]floatへ戻す)"""
         self._cap = capacity
         self._ptr = 0
         self._size = 0
         self._dev = device
+        obs_dtypes = obs_dtypes or {}
+        self._obs_dtype = {k: obs_dtypes.get(k, np.float32) for k in obs_spec}
 
         self._obs = {
-            k: np.zeros((capacity, *s), dtype=np.float32) for k, s in obs_spec.items()
+            k: np.zeros((capacity, *s), dtype=self._obs_dtype[k]) for k, s in obs_spec.items()
         }
         self._next_obs = {
-            k: np.zeros((capacity, *s), dtype=np.float32) for k, s in obs_spec.items()
+            k: np.zeros((capacity, *s), dtype=self._obs_dtype[k]) for k, s in obs_spec.items()
         }
         self._actions = np.zeros((capacity, action_dim), dtype=np.float32)
         self._rewards = np.zeros((capacity, 1), dtype=np.float32)
         self._dones = np.zeros((capacity, 1), dtype=np.float32)
+
+    def _encode(self, k: str, value: np.ndarray) -> np.ndarray:
+        if self._obs_dtype[k] == np.uint8:
+            return np.round(value * 255.0).astype(np.uint8)
+        return value
 
     def add(
         self,
@@ -53,8 +63,8 @@ class ReplayBuffer:
         done: float,
     ):
         for k in self._obs:
-            self._obs[k][self._ptr] = obs[k]
-            self._next_obs[k][self._ptr] = next_obs[k]
+            self._obs[k][self._ptr] = self._encode(k, obs[k])
+            self._next_obs[k][self._ptr] = self._encode(k, next_obs[k])
         self._actions[self._ptr] = action
         self._rewards[self._ptr] = reward
         self._dones[self._ptr] = done
@@ -63,15 +73,22 @@ class ReplayBuffer:
 
     def sample(self, batch_size: int):
         idx = np.random.randint(0, self._size, size=batch_size)
-        to_t = lambda x: torch.FloatTensor(x).to(self._dev)
-        obs = {k: to_t(self._obs[k][idx]) for k in self._obs}
-        next_obs = {k: to_t(self._next_obs[k][idx]) for k in self._next_obs}
+
+        def to_t(k: str, arr: np.ndarray):
+            x = arr[idx]
+            if self._obs_dtype[k] == np.uint8:
+                x = x.astype(np.float32) / 255.0
+            return torch.FloatTensor(x).to(self._dev)
+
+        obs = {k: to_t(k, self._obs[k]) for k in self._obs}
+        next_obs = {k: to_t(k, self._next_obs[k]) for k in self._next_obs}
+        to_t_plain = lambda x: torch.FloatTensor(x).to(self._dev)
         return (
             obs,
-            to_t(self._actions[idx]),
-            to_t(self._rewards[idx]),
+            to_t_plain(self._actions[idx]),
+            to_t_plain(self._rewards[idx]),
             next_obs,
-            to_t(self._dones[idx]),
+            to_t_plain(self._dones[idx]),
         )
 
     def __len__(self) -> int:
@@ -158,7 +175,7 @@ class Critic(nn.Module):
 
 
 class SACAgent:
-    """SAC Agent（encoder_factory: PointNavEncoder を返す, action_dim: 行動次元数, cfg: TrainConfig, device: "cuda" or "cpu"）"""
+    """Actor/Criticの学習・推論・保存を統括するSACエージェント"""
 
     def __init__(self, encoder_factory, action_dim: int, cfg: Any, device: str):
         self.device = device

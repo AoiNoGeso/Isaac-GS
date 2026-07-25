@@ -7,7 +7,7 @@ import sys
 
 
 def _find_gsplat_paths():
-    """GSPLAT_DIR / USD_LIBS を環境変数優先, なければ .venv 内を自動検出する."""
+    """GSPLAT_DIR/USD_LIBSを環境変数から取得し、無ければ.venv内から自動検出する"""
     gsplat_dir = os.environ.get("GSPLAT_DIR")
     usd_libs = os.environ.get("USD_LIBS")
 
@@ -50,7 +50,7 @@ def run(input_dir: str, output_dir: str, source_up_axis: str = "Y"):
         "-o",
         usdc_path,
         "--up-axis",
-        "Y",
+        "Y",  # usd_convert_gsplat側の中間フラグ(coords.pyと同じく"Y"のみ対応)
     ]
 
     print("Running usd_convert_gsplat...")

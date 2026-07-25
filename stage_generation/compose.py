@@ -1,10 +1,11 @@
-"""gs.usdc / floor_mesh.usd / wall_mesh.usd を統合し, CollisionAPI 付与・NavMeshVolume 自動配置を行った stage.usda を生成する (NavMesh Bake は API 不可のため生成後に Isaac Sim GUI で手動実施)."""
+"""gs.usdc / floor_mesh.usd / wall_mesh.usd を統合しstage.usdaを生成する。
+CollisionAPI付与とNavMeshVolumeの自動配置まで行う(NavMesh自体のbakeは環境起動時にランタイムで実行される)。"""
 
 import os
 
 
 def _apply_scale(prim, scale: float, Gf, UsdGeom):
-    """既存の xformOp:scale があれば上書き, 無ければ追加する (重複追加を回避)."""
+    """xformOp:scaleを設定する(既存があれば上書き)"""
     xformable = UsdGeom.Xformable(prim)
     scale_op = None
     for op in xformable.GetOrderedXformOps():
@@ -47,12 +48,12 @@ def run(
     import omni.usd
     from pxr import Gf, PhysxSchema, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
 
-    # Step 1: ステージ作成・prim 配置・保存
+    # Step 1: ステージ作成・prim配置・保存
     stage = Usd.Stage.CreateNew(out_path)
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
     UsdGeom.SetStageMetersPerUnit(stage, 1.0)
 
-    # defaultPrim を "env" にすることで add_reference_to_stage(prim_path="/World/env") 時に floor_mesh/wall_mesh が正しく解決される.
+    # defaultPrimを"env"にすることで参照時のパス解決が安定する
     env_prim = UsdGeom.Xform.Define(stage, "/env")
     stage.SetDefaultPrim(env_prim.GetPrim())
 
@@ -76,10 +77,9 @@ def run(
     stage.GetRootLayer().Save()
     print("Step 1 完了: ステージ作成")
 
-    # Step 2: CollisionAPI の付与
+    # Step 2: CollisionAPIの付与
     stage2 = Usd.Stage.Open(out_path)
 
-    # PhysX マテリアルを作成 (PxShape::getMaterialFromInternalFaceIndex 警告を抑制)
     mat_prim = UsdShade.Material.Define(stage2, "/env/PhysicsMaterial")
     UsdPhysics.MaterialAPI.Apply(mat_prim.GetPrim())
     PhysxSchema.PhysxMaterialAPI.Apply(mat_prim.GetPrim())
@@ -94,7 +94,6 @@ def run(
                 UsdPhysics.CollisionAPI.Apply(prim)
                 mesh_api = UsdPhysics.MeshCollisionAPI.Apply(prim)
                 mesh_api.CreateApproximationAttr(UsdPhysics.Tokens.none)
-                # GeomSubset を非アクティブ化してフェイスマテリアルインデックス警告を抑制.
                 for child in prim.GetChildren():
                     if child.GetTypeName() == "GeomSubset":
                         child.SetActive(False)
@@ -109,7 +108,7 @@ def run(
     floor_count = apply_collision("/env/floor_mesh")
     wall_count = apply_collision("/env/wall_mesh")
 
-    # wall_mesh にのみ PhysxContactReportAPI を付与 (衝突イベント検知に必要)
+    # 衝突検知にはwall_meshのみContactReportAPIが必要
     wall_root = stage2.GetPrimAtPath("/env/wall_mesh")
     for prim in Usd.PrimRange(wall_root):
         if prim.GetTypeName() == "Mesh":
@@ -118,7 +117,7 @@ def run(
     stage2.GetRootLayer().Save()
     print(f"Step 2 完了: CollisionAPI + PhysicsMaterial 付与 (floor={floor_count}, wall={wall_count}), PhysxContactReportAPI 付与 (wall)")
 
-    # Step 3: NavMeshVolume 配置 (AABB を floor_mesh から自動計算)
+    # Step 3: floor_meshのAABBからNavMeshVolumeを自動配置
     omni.usd.get_context().open_stage(out_path)
     for _ in range(30):
         app.update()
@@ -137,7 +136,7 @@ def run(
         f"max=({bmax[0]:.2f},{bmax[1]:.2f},{bmax[2]:.2f})"
     )
 
-    # Z-up: X/Y が水平, Z が垂直. スケール = 全辺長 (extent が ±0.5 のため scale がそのまま辺長)
+    # Z-up(X/Yが水平, Zが垂直)。extentが±0.5なのでscaleがそのまま辺長になる
     sx = (bmax[0] - bmin[0]) + margin_xy * 2
     sy = (bmax[1] - bmin[1]) + margin_xy * 2
     sz = (bmax[2] - bmin[2]) + margin_z_bot + margin_z_top
@@ -166,11 +165,7 @@ def run(
     )
 
     print(f"\nStage saved: {out_path}")
-    print("\n⚠️  NavMesh Bake は GUI で手動実施してください:")
-    print("  1. Isaac Sim で stage.usda を開く")
-    print("  2. Window > Navigation > NavMesh パネルを開く")
-    print("  3. Bake ボタンを押す")
-    print("  4. File > Save で保存する")
+    print("NavMeshは環境起動時(envs/isaac_env.py)にランタイムでbakeされるため、ここでの手動bakeは不要")
 
     print("\n--- Prim 構成 ---")
     for prim in Usd.PrimRange(active_stage.GetPseudoRoot()):

@@ -9,7 +9,7 @@ def run(input: str, output: str, source_up_axis: str = "Y"):
 
     app = SimulationApp({"headless": True})
 
-    # Isaac Sim の仕様上, omni 関連は SimulationApp 起動後にインポートする必要がある
+    # omni関連はSimulationApp起動後でないとインポートできない
     import numpy as np
     import omni.kit.asset_converter as ac
     from pxr import Gf, Usd, UsdGeom, Vt
@@ -43,7 +43,7 @@ def run(input: str, output: str, source_up_axis: str = "Y"):
         if pts:
             pts_np = apply_matrix_to_vec3_array(np.array(pts), R)
             mesh.GetPointsAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*p) for p in pts_np]))
-            # BBoxCache は extent を優先するため points と合わせて更新
+            # BBoxCacheはextentを優先するためpointsと合わせて更新する
             new_min, new_max = compute_extent(pts_np)
             mesh.GetExtentAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*new_min), Gf.Vec3f(*new_max)]))
         nrm = mesh.GetNormalsAttr().Get()

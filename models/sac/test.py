@@ -5,17 +5,9 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from pydantic import BaseModel
-
-
-class TestCfg(BaseModel):
-    model_path: str = "checkpoints/sac_final.pt"
-    episodes_per_stage: int = 100
-
-
 parser = argparse.ArgumentParser()
 parser.add_argument("--headless", action="store_true", default=False)
-parser.add_argument("--model", type=str, default=None, help="チェックポイントパス")
+parser.add_argument("--model", type=str, required=True, help="チェックポイントパス")
 parser.add_argument(
     "--stage-index", type=int, default=0, help="評価するステージのインデックス"
 )
@@ -51,36 +43,21 @@ _OUT = sys.stdout
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from envs import PointNavGymEnv
-from envs.config import EnvConfig, STAGE_PRESETS
-from envs.sensors.camera_sensor import RGBDCamera
-from models.sac.config import ModelConfig, TrainConfig
+from envs.config import STAGE_PRESETS, EnvConfig, stage_names as _stage_names
+from models.sac.config import ModelConfig, TestConfig, TrainConfig
 from models.sac.network import make_encoder
 from models.sac.policy import SACAgent
-from utils.wandb_utils import EpisodeTracker
+from utils.metrics import EpisodeTracker
+from utils.video import make_overhead_camera, write_frame as _write_frame, write_overhead_frame as _write_overhead_frame
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-OVERHEAD_CAMERA_PRIM_PATH = "/World/OverheadCamera"
-
-
-def _write_frame(writer: cv2.VideoWriter, rgb: np.ndarray) -> None:
-    """rgb: (3,H,W) float32 [0,1] -> BGR uint8 (H,W,3) をvideo writerへ書き込む"""
-    frame = (rgb.transpose(1, 2, 0) * 255.0).clip(0, 255).astype(np.uint8)
-    writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-
-
-def _write_overhead_frame(writer: cv2.VideoWriter, rgb_hwc: np.ndarray) -> None:
-    """rgb_hwc: (H,W,3) uint8 をvideo writerへ書き込む"""
-    writer.write(cv2.cvtColor(rgb_hwc, cv2.COLOR_RGB2BGR))
-
 
 def main():
-    test_cfg = TestCfg()
+    """指定ステージでモデルを評価し、成功率等の指標を表示する"""
+    test_cfg = TestConfig()
 
-    if args.model is not None:
-        test_cfg.model_path = args.model
-
-    stage_names = list(STAGE_PRESETS.keys())
+    stage_names = _stage_names()
     if args.stage_index >= len(stage_names):
         print(
             f"[test] Error: stage-index {args.stage_index} は範囲外です (stages={len(stage_names)})"
@@ -91,16 +68,13 @@ def main():
     stage_cfg = STAGE_PRESETS[stage_names[args.stage_index]]
 
     print(f"[test] Stage {args.stage_index}: {stage_cfg.stage_path}")
-    print(f"[test] Model: {test_cfg.model_path}")
+    print(f"[test] Model: {args.model}")
     print(f"[test] Episodes: {test_cfg.episodes_per_stage}")
     print(f"[test] num_humans: {args.num_humans}")
 
     model_cfg = ModelConfig()
-    env_cfg = EnvConfig(
-        stage_path=stage_cfg.stage_path,
-        fixed_spawn_pos=stage_cfg.fixed_spawn_pos,
-        fixed_goal_pos=stage_cfg.fixed_goal_pos,
-        fixed_spawn_yaw_deg=stage_cfg.fixed_spawn_yaw_deg,
+    env_cfg = EnvConfig.from_preset(
+        stage_names[args.stage_index],
         show_camera_viewport=not args.headless,
         num_humans=args.num_humans,
     )
@@ -113,10 +87,10 @@ def main():
     agent = SACAgent(
         encoder_factory=lambda: make_encoder(model_cfg, img_size=env_cfg.camera_resolution[0]),
         action_dim=action_dim,
-        cfg=TrainConfig(),
+        cfg=TrainConfig(stage=stage_names[args.stage_index]),
         device=DEVICE,
     )
-    agent.load(test_cfg.model_path)
+    agent.load(args.model)
 
     video_dir = None
     if args.video:
@@ -127,22 +101,10 @@ def main():
         print(f"[test] video: enabled -> {video_dir}/")
 
     overhead_camera = None
-    if (
-        args.video
-        and not args.headless
-        and stage_cfg.overhead_camera_translation is not None
-    ):
-        overhead_camera = RGBDCamera(
-            camera_prim_path=OVERHEAD_CAMERA_PRIM_PATH,
-            resolution=env_cfg.camera_resolution,
-            translation=np.array(stage_cfg.overhead_camera_translation, dtype=np.float32),
-            orientation=(
-                np.array(stage_cfg.overhead_camera_orientation, dtype=np.float32)
-                if stage_cfg.overhead_camera_orientation is not None
-                else None
-            ),
-        )
-        print("[test] overhead camera: enabled")
+    if args.video and not args.headless:
+        overhead_camera = make_overhead_camera(env_cfg, stage_cfg)
+        if overhead_camera is not None:
+            print("[test] overhead camera: enabled")
 
     successes = 0
     collisions = 0
@@ -200,11 +162,7 @@ def main():
             if terminated or truncated:
                 break
 
-        success = bool(info.get("success", False))
-        collision = bool(info.get("collision", False))
-        human_collision = bool(info.get("human_collision", False))
-        wall_collision = collision and not human_collision
-        timeout = bool(info.get("timeout", False))
+        success, wall_collision, human_collision, timeout = EpisodeTracker.derive_outcome(info)
         dist_final = float(info.get("dist", 0.0))
         spl = EpisodeTracker.compute_spl(success, init_dist, path_len)
 
@@ -224,7 +182,7 @@ def main():
                 overhead_path.rename(overhead_path.with_stem(overhead_path.stem + suffix))
 
         successes += int(success)
-        collisions += int(collision)
+        collisions += int(wall_collision or human_collision)
         wall_collisions += int(wall_collision)
         human_collisions += int(human_collision)
         timeouts += int(timeout)

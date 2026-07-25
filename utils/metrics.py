@@ -4,7 +4,7 @@ import numpy as np
 
 
 class EpisodeTracker:
-    """1エピソード分の統計 (SPL 含む) を蓄積し, wandb ログ用 dict を返す."""
+    """1エピソード分の統計(SPL含む)を蓄積し、wandbログ用の辞書を返す"""
 
     def __init__(self):
         self._ep_reward = 0.0
@@ -19,6 +19,7 @@ class EpisodeTracker:
         self._total_timeout = 0
 
     def step(self, reward: float, info: dict):
+        """1ステップ分の報酬・移動距離を積算する"""
         self._ep_reward += reward
         self._ep_steps += 1
         xy = info.get("robot_xz")
@@ -29,21 +30,20 @@ class EpisodeTracker:
             self._prev_xy = xy
 
     def reset(self, obs: dict, info: dict | None = None):
+        """新しいエピソード開始時に内部状態を初期化する"""
         self._ep_reward = 0.0
         self._ep_steps = 0
         self._ep_path_len = 0.0
         self._prev_xy = None
         if "goal" in obs:
-            self._ep_init_dist = float(obs["goal"][0])  # dist [m]
+            self._ep_init_dist = float(obs["goal"][0])
         elif info is not None and "dist" in info:
-            self._ep_init_dist = float(info["dist"])  # goal 未観測時のフォールバック
+            self._ep_init_dist = float(info["dist"])
 
     def finish(self, info: dict) -> dict:
+        """エピソード終了時に統計をまとめてwandbログ用の辞書を返す"""
         self._ep_count += 1
-        success = bool(info.get("success", False))
-        human_collision = bool(info.get("human_collision", False))
-        wall_collision = bool(info.get("collision", False)) and not human_collision
-        timeout = bool(info.get("timeout", False))
+        success, wall_collision, human_collision, timeout = self.derive_outcome(info)
 
         self._total_success += int(success)
         self._total_wall_collision += int(wall_collision)
@@ -70,7 +70,16 @@ class EpisodeTracker:
 
     @staticmethod
     def compute_spl(success: bool, init_dist: float, path_len: float) -> float:
-        """SPL = success * (l / max(p, l))."""
+        """SPL(Success weighted by Path Length)を計算する"""
         if init_dist <= 0:
             return 0.0
         return float(success) * (init_dist / max(path_len, init_dist))
+
+    @staticmethod
+    def derive_outcome(info: dict) -> tuple[bool, bool, bool, bool]:
+        """envのinfoから(success, wall_collision, human_collision, timeout)を導出する"""
+        success = bool(info.get("success", False))
+        human_collision = bool(info.get("human_collision", False))
+        wall_collision = bool(info.get("collision", False)) and not human_collision
+        timeout = bool(info.get("timeout", False))
+        return success, wall_collision, human_collision, timeout

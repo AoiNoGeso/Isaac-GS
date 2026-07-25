@@ -2,6 +2,8 @@ import numpy as np
 
 
 class RGBDCamera:
+    """USDカメラprimからRGB画像とdepth画像を取得するセンサー"""
+
     def __init__(
         self,
         camera_prim_path: str,

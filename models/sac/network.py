@@ -5,6 +5,8 @@ from models.sac.config import ModelConfig
 
 
 class CNNEncoder(nn.Module):
+    """RGB画像を特徴ベクトルに変換するCNN"""
+
     def __init__(self, img_size: int = 84):
         super().__init__()
         self.net = nn.Sequential(
@@ -26,6 +28,8 @@ class CNNEncoder(nn.Module):
 
 
 class GoalEncoder(nn.Module):
+    """ゴールベクトル[距離, 相対角度]を特徴ベクトルに変換する"""
+
     def __init__(self):
         super().__init__()
         self.fc = nn.Sequential(nn.Linear(2, 32), nn.ELU())
@@ -36,7 +40,7 @@ class GoalEncoder(nn.Module):
 
 
 class PointNavEncoder(nn.Module):
-    """input_rgb / input_goal フラグに応じて CNNEncoder / GoalEncoder を組み合わせる統合エンコーダ"""
+    """CNNEncoderとGoalEncoderを設定に応じて組み合わせる統合エンコーダ"""
 
     def __init__(self, input_rgb: bool = True, input_goal: bool = True, img_size: int = 84):
         super().__init__()
@@ -60,7 +64,7 @@ class PointNavEncoder(nn.Module):
 
 
 def make_encoder(model_cfg: ModelConfig, img_size: int) -> PointNavEncoder:
-    """train/test/deploy 共通のエンコーダファクトリ生成元"""
+    """train/test/deployで共通のエンコーダ生成関数"""
     return PointNavEncoder(
         input_rgb=model_cfg.input_rgb,
         input_goal=model_cfg.input_goal,

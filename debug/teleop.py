@@ -16,11 +16,14 @@ import argparse
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from envs.config import stage_names as _stage_names  # noqa: E402
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--num-humans", type=int, default=0)
 parser.add_argument("--headless", action="store_true", default=False)
 parser.add_argument(
-    "--stage", type=str, choices=["room1", "corridor1", "corridor2"], default="corridor2"
+    "--stage", type=str, choices=_stage_names(), default="corridor2"
 )
 parser.add_argument(
     "--vis-goal", action="store_true", default=False, help="スポーン(青)・ゴール(赤)地点に半透明の円を表示"
@@ -51,10 +54,8 @@ import numpy as np
 import omni.appwindow
 import omni.usd
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
 from envs import PointNavIsaacEnv
-from envs.config import EnvConfig, STAGE_PRESETS
+from envs.config import EnvConfig
 
 MARKER_RADIUS = 0.3  # m
 MARKER_HEIGHT = 0.02  # m, xy平面に対して十分薄い円盤
@@ -84,14 +85,10 @@ def _update_marker(prim, pos):
 
 
 def main():
-    preset = STAGE_PRESETS[args.stage]
-    env_cfg = EnvConfig(
+    env_cfg = EnvConfig.from_preset(
+        args.stage,
         num_humans=args.num_humans,
         human_speed_range=(0.8, 1.5),
-        stage_path=preset.stage_path,
-        fixed_spawn_pos=preset.fixed_spawn_pos,
-        fixed_goal_pos=preset.fixed_goal_pos,
-        fixed_spawn_yaw_deg=preset.fixed_spawn_yaw_deg,
     )
     env = PointNavIsaacEnv(env_cfg)
     env.reset()
@@ -101,8 +98,8 @@ def main():
         stage = omni.usd.get_context().get_stage()
         spawn_marker = _make_marker(stage, "/World/DebugVis/SpawnMarker", (0.2, 0.4, 1.0))
         goal_marker = _make_marker(stage, "/World/DebugVis/GoalMarker", (1.0, 0.2, 0.2))
-        _update_marker(spawn_marker, env._get_robot_pos())
-        _update_marker(goal_marker, env._goal_pos)
+        _update_marker(spawn_marker, env.robot_pos)
+        _update_marker(goal_marker, env.goal_pos)
 
     input_iface = carb.input.acquire_input_interface()
     keyboard = omni.appwindow.get_default_app_window().get_keyboard()
@@ -118,7 +115,7 @@ def main():
     input_iface.subscribe_to_keyboard_events(keyboard, on_key)
     print("[Teleop] W/S=前後  A/D=回転  P=座標表示  R=リセット  Q=終了")
     if args.num_humans > 0:
-        print(f"[Teleop] 人物 {len(env._ira_characters)} 体, 接触センサーで衝突検知")
+        print(f"[Teleop] 人物 {len(env.characters)} 体, 接触センサーで衝突検知")
 
     step = 0
     prev_hc = False
@@ -131,17 +128,17 @@ def main():
         if carb.input.KeyboardInput.R in keys_pressed:
             env.reset()
             if args.vis_goal:
-                _update_marker(spawn_marker, env._get_robot_pos())
-                _update_marker(goal_marker, env._goal_pos)
+                _update_marker(spawn_marker, env.robot_pos)
+                _update_marker(goal_marker, env.goal_pos)
             keys_pressed.discard(carb.input.KeyboardInput.R)
             step = 0
             prev_hc = False
             print("\n[Teleop] リセット")
 
         if carb.input.KeyboardInput.P in keys_pressed:
-            p = env._get_robot_pos()
+            p = env.robot_pos
             print(f"\n[Pos] robot=({p[0]:.4f}, {p[1]:.4f}, {p[2]:.4f})")
-            for a in env._ira_characters:
+            for a in env.characters:
                 hp = a.get_world_position()
                 if hp is not None:
                     print(f"      {a.name}=({hp.x:.2f}, {hp.y:.2f}, {hp.z:.2f})")
@@ -165,11 +162,11 @@ def main():
             np.array([v_x, omega], dtype=np.float32)
         )
 
-        pos = env._get_robot_pos()
+        pos = env.robot_pos
 
         if args.num_humans > 0:
             nearest = None
-            for a in env._ira_characters:
+            for a in env.characters:
                 hp = a.get_world_position()
                 if hp is None:
                     continue
@@ -181,7 +178,7 @@ def main():
             hc = bool(info.get("human_collision", False))
             wall = bool(info.get("collision", False)) and not hc
 
-            # 衝突検知の瞬間 (False→True) に消えない警告を残す
+            # 衝突検知の瞬間だけ警告を出す(以後は流れて消える通常ログのみ)
             if hc and not prev_hc:
                 collision_count += 1
                 print(
@@ -200,11 +197,11 @@ def main():
                 end="\r",
             )
         else:
-            goal = env._goal_pos
+            goal = env.goal_pos
             dist_xy = float(np.linalg.norm(goal[[0, 1]] - pos[[0, 1]]))
-            goal_vec = env._compute_goal_vec()
+            goal_vec = env.goal_vec
             angle_rel_deg = float(goal_vec[1]) * 180.0
-            w, qx, qy, qz = env._get_robot_quat()
+            w, qx, qy, qz = env.robot_quat
             yaw_deg = float(
                 np.degrees(
                     np.arctan2(2.0 * (w * qz + qx * qy), 1.0 - 2.0 * (qy**2 + qz**2))
@@ -226,8 +223,8 @@ def main():
             print(f"[Teleop] episode end — {info}")
             env.reset()
             if args.vis_goal:
-                _update_marker(spawn_marker, env._get_robot_pos())
-                _update_marker(goal_marker, env._goal_pos)
+                _update_marker(spawn_marker, env.robot_pos)
+                _update_marker(goal_marker, env.goal_pos)
             step = 0
         else:
             step += 1
