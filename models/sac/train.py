@@ -14,7 +14,10 @@ args = parser.parse_args()
 
 from isaacsim import SimulationApp
 
-app = SimulationApp({"headless": args.headless})
+app = SimulationApp({
+    "headless": args.headless,
+    "extra_args": ["--/rtx/scenedb/maxHistoryTransformCount=256"],
+})
 
 import omni.log
 
@@ -26,7 +29,6 @@ import torch
 import wandb
 from tqdm import tqdm
 
-# Isaac Sim が stderr を横取りするため stdout に固定
 _OUT = sys.stdout
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -39,6 +41,33 @@ from models.sac.policy import ReplayBuffer, SACAgent
 from utils.wandb_utils import EpisodeTracker
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def run_validation(env, agent, num_episodes: int) -> dict:
+    """greedy方策でnum_episodes回評価し, 成功率/衝突率/タイムアウト率を返す"""
+    successes = wall_collisions = human_collisions = timeouts = 0
+    val_bar = tqdm(range(num_episodes), desc="[val]", leave=False, dynamic_ncols=True, file=_OUT)
+    for _ in val_bar:
+        obs, _ = env.reset()
+        while True:
+            action = agent.act(obs, deterministic=True)
+            obs, reward, terminated, truncated, info = env.step(action)
+            if terminated or truncated:
+                break
+        human_collision = bool(info.get("human_collision", False))
+        collision = bool(info.get("collision", False))
+        successes += int(info.get("success", False))
+        human_collisions += int(human_collision)
+        wall_collisions += int(collision and not human_collision)
+        timeouts += int(info.get("timeout", False))
+        val_bar.set_postfix(success=successes, human=human_collisions, wall=wall_collisions)
+    n = num_episodes
+    return {
+        "val/success_rate": successes / n,
+        "val/human_collision_rate": human_collisions / n,
+        "val/wall_collision_rate": wall_collisions / n,
+        "val/timeout_rate": timeouts / n,
+    }
 
 
 def main():
@@ -140,12 +169,21 @@ def main():
                 f"episode={ep_metrics['episode/count']:4d}"
                 f"  reward={ep_metrics['episode/reward']:+7.1f}"
                 f"  success={ep_metrics['episode/success_rate']:.2f}"
-                f"  collision={ep_metrics['episode/collision_rate']:.2f}"
-                f"  human_col={ep_metrics['episode/human_collision_rate']:.2f}",
+                f"  wall={ep_metrics['episode/wall_collision_rate']:.2f}"
+                f"  human={ep_metrics['episode/human_collision_rate']:.2f}"
+                f"  timeout={ep_metrics['episode/timeout_rate']:.2f}",
                 file=_OUT,
             )
             if use_wandb:
                 wandb.log(ep_metrics, step=step)
+            obs, reset_info = env.reset()
+            tracker.reset(obs, reset_info)
+
+        if step % train_cfg.val_interval == 0:
+            val_metrics = run_validation(env, agent, train_cfg.val_episodes)
+            tqdm.write(f"[val] step={step} {val_metrics}", file=_OUT)
+            if use_wandb:
+                wandb.log(val_metrics, step=step)
             obs, reset_info = env.reset()
             tracker.reset(obs, reset_info)
 

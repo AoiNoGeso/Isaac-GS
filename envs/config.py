@@ -34,6 +34,8 @@ class StagePreset(BaseModel):
     fixed_spawn_pos: tuple[float, float, float] | None
     fixed_goal_pos: tuple[float, float, float] | None
     fixed_spawn_yaw_deg: float | None
+    overhead_camera_translation: tuple[float, float, float] | None = None
+    overhead_camera_orientation: tuple[float, float, float, float] | None = None  # (w,x,y,z)
 
 
 STAGE_PRESETS: dict[str, StagePreset] = {
@@ -85,7 +87,7 @@ class EnvConfig(BaseModel):
     r_spin: float = -0.05  # 回転ペナルティ係数 (r_spin × ω²)
     r_time: float = -0.025  # 毎ステップ定数ペナルティ
     r_timeout: float = 0.0  # タイムアウトペナルティ (r_timeで代替のため0)
-    r_human_collision: float = -100.0  # ロボット-人物 接触ペナルティ (検知で即終了)
+    r_human_collision: float = -50.0  # ロボット-人物 接触ペナルティ (検知で即終了)
 
     # ── 判定 ────────────────────────────────────────────────────
     collision_grace_steps: int = 5
@@ -105,10 +107,10 @@ class EnvConfig(BaseModel):
     human_speed_range: tuple[float, float] = (0.8, 1.5)  # Wander 歩行速度 [m/s]
     human_distance_range: tuple[float, float] = (3.0, 8.0)  # Wander 目標距離 [m]
     human_seed: int = 42
-    reset_humans_each_episode: bool = True  # エピソード毎に再配置 (ベストエフォート)
+    human_collision_dist: float = 0.65  # ロボット-人物 距離ベース衝突判定しきい値 [m]
 
     # ── NavMesh bake (壁+床の統合bake) ────────────────────────
     # navmesh bake時のagent半径 [cm] (既定agentMinRadius=20), 0以下で変更しない
-    navmesh_agent_radius_cm: float = 55.0
+    navmesh_agent_radius_cm: float = 50.0
     # navmesh bake時の要求最小天井高 [cm] (既定agentMinHeight=200), 0以下で変更しない
     navmesh_agent_height_cm: float = 200.0

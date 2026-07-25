@@ -9,10 +9,12 @@ class ModelConfig(BaseModel):
 
 class TrainConfig(BaseModel):
     total_timesteps: int = 500_000
-    run_name: str | None = "S2-PGB+G_corridor2_0719"
-    log_dir: str = "runs/SocialNav-RGB+Goal/corridor2/0719"
+    run_name: str | None = "S2-PGB+G_corridor2_0725"
+    log_dir: str = "runs/SocialNav-RGB+Goal/corridor2/0725"
     log_interval: int = 1_000
     checkpoint_interval: int = 20_000
+    val_interval: int = 10_000  # 何stepごとにバリデーションを実行するか
+    val_episodes: int = 10  # バリデーション1回あたりのエピソード数
 
     # SAC ハイパーパラメータ
     buffer_size: int = 100_000

@@ -30,7 +30,10 @@ args = parser.parse_args()
 
 from isaacsim import SimulationApp
 
-app = SimulationApp({"headless": args.headless})
+app = SimulationApp({
+    "headless": args.headless,
+    "extra_args": ["--/rtx/scenedb/maxHistoryTransformCount=256"],
+})
 
 import omni.log
 
@@ -49,6 +52,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from envs import PointNavGymEnv
 from envs.config import EnvConfig, STAGE_PRESETS
+from envs.sensors.camera_sensor import RGBDCamera
 from models.sac.config import ModelConfig, TrainConfig
 from models.sac.network import make_encoder
 from models.sac.policy import SACAgent
@@ -56,11 +60,18 @@ from utils.wandb_utils import EpisodeTracker
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
+OVERHEAD_CAMERA_PRIM_PATH = "/World/OverheadCamera"
+
 
 def _write_frame(writer: cv2.VideoWriter, rgb: np.ndarray) -> None:
     """rgb: (3,H,W) float32 [0,1] -> BGR uint8 (H,W,3) をvideo writerへ書き込む"""
     frame = (rgb.transpose(1, 2, 0) * 255.0).clip(0, 255).astype(np.uint8)
     writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+
+
+def _write_overhead_frame(writer: cv2.VideoWriter, rgb_hwc: np.ndarray) -> None:
+    """rgb_hwc: (H,W,3) uint8 をvideo writerへ書き込む"""
+    writer.write(cv2.cvtColor(rgb_hwc, cv2.COLOR_RGB2BGR))
 
 
 def main():
@@ -115,6 +126,24 @@ def main():
         video_fps = 1.0 / env_cfg.rendering_dt
         print(f"[test] video: enabled -> {video_dir}/")
 
+    overhead_camera = None
+    if (
+        args.video
+        and not args.headless
+        and stage_cfg.overhead_camera_translation is not None
+    ):
+        overhead_camera = RGBDCamera(
+            camera_prim_path=OVERHEAD_CAMERA_PRIM_PATH,
+            resolution=env_cfg.camera_resolution,
+            translation=np.array(stage_cfg.overhead_camera_translation, dtype=np.float32),
+            orientation=(
+                np.array(stage_cfg.overhead_camera_orientation, dtype=np.float32)
+                if stage_cfg.overhead_camera_orientation is not None
+                else None
+            ),
+        )
+        print("[test] overhead camera: enabled")
+
     successes = 0
     collisions = 0
     wall_collisions = 0
@@ -134,6 +163,8 @@ def main():
 
         video_writer = None
         video_path = None
+        overhead_writer = None
+        overhead_path = None
         if video_dir is not None:
             H, W = env_cfg.camera_resolution[1], env_cfg.camera_resolution[0]
             video_path = video_dir / f"ep{ep:04d}.mp4"
@@ -142,6 +173,14 @@ def main():
             )
             _write_frame(video_writer, obs["rgb"])
 
+            if overhead_camera is not None:
+                overhead_path = video_dir / f"ep{ep:04d}_overhead.mp4"
+                overhead_writer = cv2.VideoWriter(
+                    str(overhead_path), cv2.VideoWriter_fourcc(*"mp4v"), video_fps, (W, H)
+                )
+                overhead_rgb, _ = overhead_camera.get_rgbd()
+                _write_overhead_frame(overhead_writer, overhead_rgb)
+
         while True:
             action = agent.act(obs, deterministic=True)
             obs, reward, terminated, truncated, info = env.step(action)
@@ -149,6 +188,9 @@ def main():
 
             if video_writer is not None:
                 _write_frame(video_writer, obs["rgb"])
+            if overhead_writer is not None:
+                overhead_rgb, _ = overhead_camera.get_rgbd()
+                _write_overhead_frame(overhead_writer, overhead_rgb)
 
             xy = info.get("robot_xz")
             if xy is not None and prev_xy is not None:
@@ -177,6 +219,9 @@ def main():
             else:
                 suffix = "_t"
             video_path.rename(video_path.with_stem(video_path.stem + suffix))
+            if overhead_writer is not None:
+                overhead_writer.release()
+                overhead_path.rename(overhead_path.with_stem(overhead_path.stem + suffix))
 
         successes += int(success)
         collisions += int(collision)

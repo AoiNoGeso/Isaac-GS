@@ -35,7 +35,10 @@ args = parser.parse_args()
 
 from isaacsim import SimulationApp
 
-app = SimulationApp({"headless": args.headless})
+app = SimulationApp({
+    "headless": args.headless,
+    "extra_args": ["--/rtx/scenedb/maxHistoryTransformCount=256"],
+})
 
 import omni.log
 

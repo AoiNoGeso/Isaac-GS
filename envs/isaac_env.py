@@ -436,7 +436,7 @@ class PointNavIsaacEnv:
         bh = character.get_bh_agent()
         if bh is None:
             return
-        bh.reset(target=carb.Float3(float(pt[0]), float(pt[1]), float(pt[2])), facing=None)
+        bh.teleport(target=carb.Float3(float(pt[0]), float(pt[1]), float(pt[2])), facing=None)
 
     def _reset_humans(self):
         """各人物をNavMesh上の新しいランダム点へ再配置する"""
@@ -445,31 +445,6 @@ class PointNavIsaacEnv:
             if pt is not None:
                 self._relocate_human(character, pt)
         self._world.step(render=False)
-
-    def _recover_stray_humans(self, threshold: float = 0.5) -> None:
-        """navmeshから外れた人物を検知し, 新しい navmesh 上の点へ復帰させる"""
-        import carb
-
-        nm = self._inav.get_navmesh()
-        if nm is None:
-            return
-        for character in self._ira_characters:
-            hp = character.get_world_position()
-            if hp is None:
-                continue
-            result = nm.query_closest_point(carb.Float3(float(hp.x), float(hp.y), float(hp.z)))
-            closest = result[0] if isinstance(result, tuple) else result
-            if closest is None:
-                continue
-            try:
-                cx, cy = float(closest.x), float(closest.y)
-            except AttributeError:
-                cx, cy = float(closest[0]), float(closest[1])
-            dist_sq = (cx - float(hp.x)) ** 2 + (cy - float(hp.y)) ** 2
-            if dist_sq > threshold**2:
-                pt = self._sample_navmesh_point_for_human()
-                if pt is not None:
-                    self._relocate_human(character, pt)
 
     # ------------------------------------------------------------------
     # reset / step
@@ -522,7 +497,7 @@ class PointNavIsaacEnv:
         self._teleport_robot(robot_pos, yaw=spawn_yaw)
         self._world.step(render=True)
 
-        if self._ira_characters and self.env_cfg.reset_humans_each_episode:
+        if self._ira_characters:
             self._reset_humans()
 
         return self._get_obs()
@@ -620,9 +595,6 @@ class PointNavIsaacEnv:
             truncated = False
             info["collision"] = True
 
-        if self._ira_characters:
-            self._recover_stray_humans()
-
         return obs, reward, terminated, truncated, info
 
     def _get_obs(self) -> dict:
@@ -704,10 +676,20 @@ class PointNavIsaacEnv:
     def _check_human_contact(self) -> bool:
         if not self._ira_characters:
             return False
-        return any(
+        if any(
             HUMANS_ROOT in body0 or HUMANS_ROOT in body1
             for body0, body1 in self._contact_bodies()
-        )
+        ):
+            return True
+        pos = self._get_robot_pos()
+        for character in self._ira_characters:
+            hp = character.get_world_position()
+            if hp is None:
+                continue
+            dist = float(np.hypot(hp.x - pos[0], hp.y - pos[1]))
+            if dist < self.env_cfg.human_collision_dist:
+                return True
+        return False
 
     def _check_collision(self) -> bool:
         if self._step_count < self.env_cfg.collision_grace_steps:
