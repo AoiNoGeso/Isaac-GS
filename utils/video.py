@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 
 OVERHEAD_CAMERA_PRIM_PATH = "/World/OverheadCamera"
+OVERHEAD_CAMERA_RESOLUTION = (854, 480)  # 480p相当。ロボット観測用84x84とは独立
 
 
 def write_frame(writer: cv2.VideoWriter, rgb: np.ndarray) -> None:
@@ -17,8 +18,9 @@ def write_overhead_frame(writer: cv2.VideoWriter, rgb_hwc: np.ndarray) -> None:
     writer.write(cv2.cvtColor(rgb_hwc, cv2.COLOR_RGB2BGR))
 
 
-def make_overhead_camera(env_cfg, stage_preset):
-    """stage_presetに俯瞰カメラ座標が設定されていればRGBDCameraを生成する(未設定ならNone)"""
+def make_overhead_camera(stage_preset, resolution: tuple[int, int] = OVERHEAD_CAMERA_RESOLUTION):
+    """stage_presetに俯瞰カメラ座標が設定されていればRGBDCameraを生成する(未設定ならNone)。
+    解像度はロボット観測用のenv_cfg.camera_resolutionとは独立して指定できる(既定480p相当)。"""
     if stage_preset.overhead_camera_translation is None:
         return None
 
@@ -28,7 +30,7 @@ def make_overhead_camera(env_cfg, stage_preset):
 
     return RGBDCamera(
         camera_prim_path=OVERHEAD_CAMERA_PRIM_PATH,
-        resolution=env_cfg.camera_resolution,
+        resolution=resolution,
         translation=np.array(stage_preset.overhead_camera_translation, dtype=np.float32),
         orientation=(
             np.array(stage_preset.overhead_camera_orientation, dtype=np.float32)

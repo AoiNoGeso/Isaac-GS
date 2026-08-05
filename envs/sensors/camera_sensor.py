@@ -37,6 +37,10 @@ class RGBDCamera:
         self._rgb_ann.attach([rp])
         self._depth_ann.attach([rp])
 
+    @property
+    def resolution(self) -> tuple[int, int]:
+        return self._resolution
+
     def get_rgbd(self) -> tuple[np.ndarray, np.ndarray]:
         self._rep.orchestrator.step(rt_subframes=4, pause_timeline=False)
 

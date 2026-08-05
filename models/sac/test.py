@@ -102,7 +102,7 @@ def main():
 
     overhead_camera = None
     if args.video and not args.headless:
-        overhead_camera = make_overhead_camera(env_cfg, stage_cfg)
+        overhead_camera = make_overhead_camera(stage_cfg)
         if overhead_camera is not None:
             print("[test] overhead camera: enabled")
 
@@ -136,9 +136,10 @@ def main():
             _write_frame(video_writer, obs["rgb"])
 
             if overhead_camera is not None:
+                ow, oh = overhead_camera.resolution
                 overhead_path = video_dir / f"ep{ep:04d}_overhead.mp4"
                 overhead_writer = cv2.VideoWriter(
-                    str(overhead_path), cv2.VideoWriter_fourcc(*"mp4v"), video_fps, (W, H)
+                    str(overhead_path), cv2.VideoWriter_fourcc(*"mp4v"), video_fps, (ow, oh)
                 )
                 overhead_rgb, _ = overhead_camera.get_rgbd()
                 _write_overhead_frame(overhead_writer, overhead_rgb)

@@ -33,7 +33,7 @@ class RobotConfig(BaseModel):
     wheel_base: float = 0.376  # トレッド幅 [m]
     wheel_radius: float = 0.1  # ホイール半径 [m]
     v_linear_max: float = 0.5  # 最大直進速度 [m/s]
-    v_angular_max: float = 1.0  # 最大角速度 [rad/s]
+    v_angular_max: float = 0.5  # 最大角速度 [rad/s]
     spawn_offset: float = 0.1  # スポーン時のz方向オフセット [m]
     rollover_threshold: float = -0.7  # 転倒判定のしきい値
 
@@ -83,7 +83,7 @@ class EnvConfig(BaseModel):
     human_speed_range: tuple[float, float] = (0.8, 1.5)  # Wander歩行速度 [m/s]
     human_distance_range: tuple[float, float] = (3.0, 8.0)  # Wander目標距離 [m]
     human_seed: int = 42
-    human_collision_dist: float = 0.65  # ロボットとの距離ベース衝突判定しきい値 [m]
+    human_collision_dist: float = 0.55  # ロボットとの距離ベース衝突判定しきい値 [m]
 
     # NavMesh bake
     navmesh_agent_radius_cm: float = 50.0  # bake時のエージェント半径 [cm]

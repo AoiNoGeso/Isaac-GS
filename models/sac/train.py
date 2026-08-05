@@ -11,6 +11,7 @@ parser.add_argument("--headless", action="store_true", default=False)
 parser.add_argument("--checkpoint", type=str, default=None)
 parser.add_argument("--no-wandb", action="store_true", default=False)
 parser.add_argument("--num-humans", type=int, default=None)
+parser.add_argument("--profile", type=int, default=0, help="指定step数だけ計測して終了する(0で無効)")
 args = parser.parse_args()
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -29,7 +30,10 @@ from isaacsim import SimulationApp
 
 app = SimulationApp({
     "headless": args.headless,
-    "extra_args": ["--/rtx/scenedb/maxHistoryTransformCount=256"],
+    "extra_args": [
+        "--/rtx/scenedb/maxHistoryTransformCount=256",
+        # "--/app/runLoops/main/rateLimitEnabled=false",
+    ],
 })
 
 import omni.log
@@ -88,9 +92,10 @@ def validation(
             )
             write_frame(video_writer, obs["rgb"])
             if overhead_camera is not None:
+                ow, oh = overhead_camera.resolution
                 overhead_path = video_path.with_stem(video_path.stem + "_overhead")
                 overhead_writer = cv2.VideoWriter(
-                    str(overhead_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (W, H)
+                    str(overhead_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (ow, oh)
                 )
                 orgb, _ = overhead_camera.get_rgbd()
                 write_overhead_frame(overhead_writer, orgb)
@@ -106,12 +111,23 @@ def validation(
             if terminated or truncated:
                 break
 
+        success, wall_collision, human_collision, timeout = EpisodeTracker.derive_outcome(info)
+
         if video_writer is not None:
             video_writer.release()
+            if success:
+                suffix = "_s"
+            elif human_collision:
+                suffix = "_h"
+            elif wall_collision:
+                suffix = "_w"
+            else:
+                suffix = "_t"
+            video_path.rename(video_path.with_stem(video_path.stem + suffix))
             if overhead_writer is not None:
                 overhead_writer.release()
+                overhead_path.rename(overhead_path.with_stem(overhead_path.stem + suffix))
 
-        success, wall_collision, human_collision, timeout = EpisodeTracker.derive_outcome(info)
         successes += int(success)
         human_collisions += int(human_collision)
         wall_collisions += int(wall_collision)
@@ -124,6 +140,18 @@ def validation(
         "val/wall_collision_rate": wall_collisions / n,
         "val/timeout_rate": timeouts / n,
     }
+
+
+def _print_profile_summary(profiler) -> None:
+    """区間ごとの平均所要時間[ms]と全体に占める割合を表示する(--profile用、デバッグ機能)"""
+    summary = profiler.summary()
+    total = sum(summary.values())
+    print(f"\n{'=' * 50}\n[profile] 区間別の平均所要時間 (1step換算)\n{'=' * 50}")
+    for name, avg_ms in sorted(summary.items(), key=lambda kv: -kv[1]):
+        pct = (avg_ms / total * 100.0) if total > 0 else 0.0
+        print(f"  {name:16s}: {avg_ms:8.3f} ms  ({pct:5.1f}%)")
+    print(f"  {'合計':16s}: {total:8.3f} ms")
+    print(f"{'=' * 50}\n")
 
 
 def main():
@@ -163,7 +191,13 @@ def main():
             dir=train_cfg.log_dir,
         )
 
-    env = PointNavGymEnv(env_cfg=env_cfg)
+    profiler = None
+    if args.profile > 0:
+        from tests.manual.profiling import StepProfiler
+
+        profiler = StepProfiler()
+
+    env = PointNavGymEnv(env_cfg=env_cfg, profiler=profiler)
     obs, reset_info = env.reset()
 
     overhead_camera = None
@@ -171,7 +205,7 @@ def main():
         from envs.config import get_preset
         from utils.video import make_overhead_camera
 
-        overhead_camera = make_overhead_camera(env_cfg, get_preset(train_cfg.stage))
+        overhead_camera = make_overhead_camera(get_preset(train_cfg.stage))
 
     obs_spec, obs_dtypes = replay_buffer_spec(model_cfg, env_cfg.camera_resolution)
     action_dim = env.action_space.shape[0]
@@ -221,6 +255,8 @@ def main():
         use_wandb=use_wandb,
         log_dir=log_dir,
         ckpt_dir=ckpt_dir,
+        profiler=profiler,
+        profile_steps=args.profile,
     )
 
     if use_wandb:
@@ -242,21 +278,34 @@ def train(
     use_wandb: bool,
     log_dir: str,
     ckpt_dir: str,
+    profiler=None,
+    profile_steps: int = 0,
 ) -> None:
-    """学習ループ本体。ロールアウト・SAC更新・定期バリデーション・チェックポイント保存を行う"""
+    """学習ループ本体。ロールアウト・SAC更新・定期バリデーション・チェックポイント保存を行う。
+    profile_steps>0の場合はそのstep数だけ実行し、区間ごとの計測結果を表示して終了する"""
+    from contextlib import nullcontext
+
+    def span(name: str):
+        return profiler.span(name) if profiler is not None else nullcontext()
+
     metrics: dict = {}
-    pbar = tqdm(range(1, train_cfg.total_timesteps + 1), dynamic_ncols=True, file=_OUT)
+    total_steps = profile_steps if profile_steps > 0 else train_cfg.total_timesteps
+    # profile_steps指定時はlearning_startsを待たずagent.update()の計測も取れるようにする
+    learning_starts = min(train_cfg.learning_starts, 10) if profile_steps > 0 else train_cfg.learning_starts
+    pbar = tqdm(range(1, total_steps + 1), dynamic_ncols=True, file=_OUT)
     for step in pbar:
-        if len(buffer) < train_cfg.learning_starts:
-            action = env.action_space.sample()
-        else:
-            action = agent.act(obs, deterministic=False)
+        with span("agent_act"):
+            if len(buffer) < learning_starts:
+                action = env.action_space.sample()
+            else:
+                action = agent.act(obs, deterministic=False)
 
         next_obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
 
-        # タイムアウトによる終了はdone=0として扱う(TD学習でブートストラップを継続)
-        buffer.add(obs, action, reward, next_obs, float(terminated))
+        # タイムアウトによる終了はdone=0として扱う
+        with span("buffer_add"):
+            buffer.add(obs, action, reward, next_obs, float(terminated))
         tracker.step(reward, info)
         obs = next_obs
 
@@ -290,21 +339,24 @@ def train(
             tqdm.write(f"[val] step={step} {val_metrics}", file=_OUT)
             if use_wandb:
                 wandb.log(val_metrics, step=step)
+            env.regenerate_humans()
             obs, reset_info = env.reset()
             tracker.reset(obs, reset_info)
 
-        if (
-            len(buffer) >= train_cfg.learning_starts
-            and step % train_cfg.train_freq == 0
-        ):
-            metrics = agent.update(buffer)
+        if len(buffer) >= learning_starts and step % train_cfg.train_freq == 0:
+            with span("agent_update"):
+                metrics = agent.update(buffer)
             if use_wandb and step % train_cfg.log_interval == 0:
                 wandb.log(metrics, step=step)
 
-        if step % train_cfg.checkpoint_interval == 0:
+        if not profile_steps and step % train_cfg.checkpoint_interval == 0:
             ckpt_path = f"{ckpt_dir}/sac_{step}.pt"
             agent.save(ckpt_path)
             tqdm.write(f"[train] Checkpoint saved: {ckpt_path}", file=_OUT)
+
+    if profile_steps:
+        _print_profile_summary(profiler)
+        return
 
     final_path = f"{log_dir}/sac_final.pt"
     agent.save(final_path)

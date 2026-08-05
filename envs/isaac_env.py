@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
@@ -15,7 +17,7 @@ FALL_Z_THRESHOLD = -50.0
 class PointNavIsaacEnv:
     """Isaac Sim上でロボットを操作するPoint Navigation環境本体"""
 
-    def __init__(self, env_cfg: EnvConfig):
+    def __init__(self, env_cfg: EnvConfig, profiler=None):
         self.env_cfg = env_cfg
         self.robot_cfg: RobotConfig = env_cfg.robot
         self._step_count = 0
@@ -25,7 +27,11 @@ class PointNavIsaacEnv:
         self._last_omega = 0.0
         self._contact_bodies_error_logged = False
         self._velocity_explosion_error_logged = False
+        self._profiler = profiler
         self._setup()
+
+    def _span(self, name: str):
+        return self._profiler.span(name) if self._profiler is not None else nullcontext()
 
     # ------------------------------------------------------------------
     # 公開アクセサ
@@ -53,6 +59,13 @@ class PointNavIsaacEnv:
     @property
     def initial_goal_dist(self) -> float:
         return self._prev_dist
+
+    def regenerate_humans(self) -> None:
+        """人物キャラを全員作り直す(モーションマッチングの長時間フリーズ回避策)。
+        num_humans<=0(人物なし)の場合は何もしない"""
+        if not self._ira_characters:
+            return
+        self._ira_characters = self._human_mgr.regenerate(self._stage, self._ira_characters)
 
     # ------------------------------------------------------------------
     # セットアップ
@@ -120,6 +133,7 @@ class PointNavIsaacEnv:
         self._world.reset()
 
         stage = omni.usd.get_context().get_stage()
+        self._stage = stage
         physics_scene = UsdPhysics.Scene.Get(stage, "/physicsScene")
         if not physics_scene:
             physics_scene = UsdPhysics.Scene.Define(stage, "/physicsScene")
@@ -321,10 +335,13 @@ class PointNavIsaacEnv:
         result = None
         human_hit = False
         for i in range(self.env_cfg.decimation):
-            self._world.step(render=(i == self.env_cfg.decimation - 1))
-            human_hit = human_hit or self._check_human_contact()
+            with self._span("world_step"):
+                self._world.step(render=(i == self.env_cfg.decimation - 1))
+            with self._span("collision_check"):
+                human_hit = human_hit or self._check_human_contact()
+                velocity_exploded = self._check_velocity_explosion()
 
-            if self._check_velocity_explosion():
+            if velocity_exploded:
                 self._recover_physics()
                 obs = self._get_obs()
                 pos = self._get_robot_pos()
@@ -345,10 +362,12 @@ class PointNavIsaacEnv:
                 )
                 break
 
-            if (
-                self._step_count >= self.env_cfg.collision_grace_steps
-                and self._check_wall_contact()
-            ):
+            with self._span("collision_check"):
+                wall_contact = (
+                    self._step_count >= self.env_cfg.collision_grace_steps
+                    and self._check_wall_contact()
+                )
+            if wall_contact:
                 self._robot.set_joint_velocity_targets(
                     velocities=np.zeros((1, self._robot.num_dof), dtype=np.float32)
                 )
@@ -374,8 +393,10 @@ class PointNavIsaacEnv:
 
         if result is None:
             self._step_count += 1
-            obs = self._get_obs()
-            reward, info = self._compute_reward()
+            with self._span("get_obs"):
+                obs = self._get_obs()
+            with self._span("compute_reward"):
+                reward, info = self._compute_reward()
             terminated = info["success"] or info["collision"]
             truncated = self._step_count >= self.env_cfg.max_episode_steps
             if truncated:
@@ -581,9 +602,10 @@ class PointNavIsaacEnv:
 class PointNavGymEnv(gym.Env):
     """gymnasium.Envラッパー, RGB・Depth・goalを発行"""
 
-    def __init__(self, env_cfg: EnvConfig):
+    def __init__(self, env_cfg: EnvConfig, profiler=None):
         super().__init__()
         self.env_cfg = env_cfg
+        self._profiler = profiler  # デバッグ用計測フック(tests/manual/profiling.py)。既定Noneで無効
         W, H = self.env_cfg.camera_resolution
 
         self.observation_space = spaces.Dict(
@@ -602,7 +624,7 @@ class PointNavGymEnv(gym.Env):
 
     def _lazy_init(self):
         if self._env is None:
-            self._env = PointNavIsaacEnv(self.env_cfg)
+            self._env = PointNavIsaacEnv(self.env_cfg, profiler=self._profiler)
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         """`seed`は無視される(NavMeshのランダムサンプリングはPythonから制御不能なため、
@@ -615,6 +637,10 @@ class PointNavGymEnv(gym.Env):
 
     def step(self, action: np.ndarray):
         return self._env.step(action)
+
+    def regenerate_humans(self) -> None:
+        if self._env is not None:
+            self._env.regenerate_humans()
 
     def render(self):
         pass

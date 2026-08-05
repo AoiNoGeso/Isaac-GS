@@ -249,3 +249,26 @@ class IRAHumanManager:
             if pt is not None:
                 self.relocate_human(character, pt)
         self._world.step(render=False)
+
+    def regenerate(self, stage, characters: list) -> list:
+        """人物prim + HumanMotionLibraryを削除し, inject_ira_humansで作り直す。
+        omni.anim.behavior.coreのモーションマッチングが累積30万step程度でNaNを生成し
+        該当キャラクターが恒久フリーズするバグの回避策(tests/manual/ira_freeze_repro.pyで検証済み)"""
+        import omni.kit.app
+        import omni.kit.commands
+        import omni.timeline
+
+        # timeline再生中にアクティブなキャラクターprimを削除するとネイティブ側がクラッシュするため、
+        # 削除前に必ずtimelineを停止する
+        timeline = omni.timeline.get_timeline_interface()
+        timeline.stop()
+
+        app = omni.kit.app.get_app()
+        for _ in range(3):
+            app.update()
+
+        omni.kit.commands.execute("DeletePrims", paths=[HUMANS_ROOT, MOTION_LIBRARY_PRIM_PATH])
+        for _ in range(3):
+            self._world.step(render=False)
+
+        return self.inject_ira_humans(stage)
