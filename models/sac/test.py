@@ -1,6 +1,7 @@
 """Point Navigation テストスクリプト。実行例: uv run models/sac/test.py --model path/to/sac_final.pt --stage-index 0 [--num-humans N]"""
 
 import argparse
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -18,13 +19,20 @@ parser.add_argument(
 parser.add_argument(
     "--video-dir", type=str, default="videos", help="動画の出力先ディレクトリ (default: videos)"
 )
+parser.add_argument("--gpu", type=int, default=0, help="共用マシンでの複数GPU分散を防ぐため、使用するGPU番号を固定する")
 args = parser.parse_args()
+
+# CUDA初期化(isaacsim/torch)より前に設定する必要がある(train.pyと同じ理由)。
+os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
 
 from isaacsim import SimulationApp
 
 app = SimulationApp({
     "headless": args.headless,
-    "extra_args": ["--/rtx/scenedb/maxHistoryTransformCount=256"],
+    "extra_args": [
+        "--/rtx/scenedb/maxHistoryTransformCount=256",
+        "--/renderer/activeGpu=0",
+    ],
 })
 
 import omni.log

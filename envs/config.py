@@ -78,12 +78,15 @@ class EnvConfig(BaseModel):
     fixed_goal_pos: tuple[float, float, float] | None = None
     fixed_spawn_yaw_deg: float | None = None
 
-    # 人物キャラ (num_humans=0でPointNavigationのみ)
+    # 人物キャラ (num_humans=0でPointNavigationのみ, envs/human_controller/参照)
     num_humans: int = 2
-    human_speed_range: tuple[float, float] = (0.8, 1.5)  # Wander歩行速度 [m/s]
-    human_distance_range: tuple[float, float] = (3.0, 8.0)  # Wander目標距離 [m]
-    human_seed: int = 42
+    human_controller: str = "orca"  # 衝突回避アルゴリズム。今のところ"orca"のみ実装
+    human_speed_range: tuple[float, float] = (0.8, 1.5)  # 歩行速度 [m/s]
+    # エージェント半径 [m] (CrowdControllerに渡す)。NavMesh境界は既にnavmesh_agent_radius_cm分
+    # 壁から内側にオフセットされているため、大きくしすぎると余白が二重取りになり通行不能になる。
+    human_radius: float = 0.2
     human_collision_dist: float = 0.55  # ロボットとの距離ベース衝突判定しきい値 [m]
+    human_min_goal_dist: float = 2.0  # 人物のスポーン-ゴール間の最小距離 [m] (min_goal_distと同じ役割)
 
     # NavMesh bake
     navmesh_agent_radius_cm: float = 50.0  # bake時のエージェント半径 [cm]

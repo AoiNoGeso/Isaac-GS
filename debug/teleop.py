@@ -3,7 +3,7 @@
 
 W/S: 前進/後退  A/D: 左回転/右回転  P: 座標表示  R: リセット  Q: 終了
 
---num-humans > 0 の場合は IRA アバターを注入する
+--num-humans > 0 の場合は人間アバター(ORCA + ai4animationpy, envs/human_controller/)を注入する
 
 実行:
   cd ~/Programs/Isaac-GS
@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from envs.config import stage_names as _stage_names  # noqa: E402
+from envs.config import stage_names as _stage_names
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--num-humans", type=int, default=0)
@@ -166,11 +166,8 @@ def main():
 
         if args.num_humans > 0:
             nearest = None
-            for a in env.characters:
-                hp = a.get_world_position()
-                if hp is None:
-                    continue
-                d = float(np.hypot(hp.x - pos[0], hp.y - pos[1]))
+            for hx, hy in env.human_positions_xy:
+                d = float(np.hypot(hx - pos[0], hy - pos[1]))
                 if nearest is None or d < nearest:
                     nearest = d
             nearest_str = f"{nearest:.2f}m" if nearest is not None else "N/A"
@@ -186,6 +183,11 @@ def main():
                     f"(#{collision_count}  step={step}  nearest_human={nearest_str})"
                 )
             prev_hc = hc
+
+            if args.num_humans > 0 and env._human_mgr._states:
+                nm = env._inav.get_navmesh()
+                s0 = env._human_mgr._states[0]
+                hx, hy = env.human_positions_xy[0]
 
             print(
                 "\x1b[K"

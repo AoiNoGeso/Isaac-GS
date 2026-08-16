@@ -8,7 +8,7 @@ from gymnasium import spaces
 
 from envs.config import EnvConfig, RobotConfig
 from envs.geometry import goal_vec, quat_to_yaw
-from envs.humans.ira import HUMANS_ROOT, IRAHumanManager
+from envs.human_controller import HUMANS_ROOT, HumanManager
 
 # 落下判定
 FALL_Z_THRESHOLD = -50.0
@@ -23,7 +23,7 @@ class PointNavIsaacEnv:
         self._step_count = 0
         self._goal_pos = np.zeros(3, dtype=np.float32)
         self._prev_dist = 0.0
-        self._ira_characters: list = []
+        self._humans: list = []
         self._last_omega = 0.0
         self._contact_bodies_error_logged = False
         self._velocity_explosion_error_logged = False
@@ -54,18 +54,15 @@ class PointNavIsaacEnv:
 
     @property
     def characters(self) -> list:
-        return self._ira_characters
+        return self._humans
+
+    @property
+    def human_positions_xy(self) -> list[tuple[float, float]]:
+        return self._human_mgr.get_world_positions_xy() if self._humans else []
 
     @property
     def initial_goal_dist(self) -> float:
         return self._prev_dist
-
-    def regenerate_humans(self) -> None:
-        """人物キャラを全員作り直す(モーションマッチングの長時間フリーズ回避策)。
-        num_humans<=0(人物なし)の場合は何もしない"""
-        if not self._ira_characters:
-            return
-        self._ira_characters = self._human_mgr.regenerate(self._stage, self._ira_characters)
 
     # ------------------------------------------------------------------
     # セットアップ
@@ -85,28 +82,10 @@ class PointNavIsaacEnv:
         robot = self.robot_cfg
         kit_app = omni.kit.app.get_app()
 
-        # IRA拡張はphysics/World/robot構築より前に有効化する必要がある
-        if self.env_cfg.num_humans > 0:
-            import asyncio
-
-            for ext in (
-                "isaacsim.replicator.agent.core",
-                "omni.anim.behavior.core",
-                "omni.anim.navigation.core",
-                "omni.anim.retarget.core",
-            ):
-                enable_extension(ext)
-            for _ in range(5):
-                kit_app.update()
-
-            # new_stage_asyncで新規ステージ作成後に参照・World構築を行う
-            fut = asyncio.ensure_future(omni.usd.get_context().new_stage_async())
-            while not fut.done():
-                kit_app.update()
-            for _ in range(3):
-                kit_app.update()
-
         enable_extension("omni.anim.navigation.bundle")
+        if self.env_cfg.num_humans > 0:
+            # 人物の高さ追従用カプセル(envs/human_controller/human_manager.py)を動かすのに必要。
+            enable_extension("omni.physx.cct")
         for _ in range(10):
             kit_app.update()
 
@@ -239,11 +218,8 @@ class PointNavIsaacEnv:
         if self.env_cfg.show_camera_viewport:
             self._setup_camera_viewport()
 
-        self._human_mgr = IRAHumanManager(self.env_cfg, self._world, self._inav)
-        if self.env_cfg.num_humans > 0:
-            self._ira_characters = self._human_mgr.inject_ira_humans(stage)
-        else:
-            self._ira_characters = []
+        self._human_mgr = HumanManager(self.env_cfg, self._world, self._inav)
+        self._humans = self._human_mgr.inject_humans(stage) if self.env_cfg.num_humans > 0 else []
 
     def _setup_camera_viewport(self):
         try:
@@ -308,8 +284,8 @@ class PointNavIsaacEnv:
         self._teleport_robot(robot_pos, yaw=spawn_yaw)
         self._world.step(render=True)
 
-        if self._ira_characters:
-            self._human_mgr.reset_humans(self._ira_characters)
+        if self._humans:
+            self._human_mgr.reset_humans(self._humans)
 
         return self._get_obs()
 
@@ -335,8 +311,14 @@ class PointNavIsaacEnv:
         result = None
         human_hit = False
         for i in range(self.env_cfg.decimation):
+            if self._humans:
+                with self._span("human_step"):
+                    self._human_mgr.pre_physics_step(self.env_cfg.physics_dt)
             with self._span("world_step"):
                 self._world.step(render=(i == self.env_cfg.decimation - 1))
+            if self._humans:
+                with self._span("human_step_post"):
+                    self._human_mgr.post_physics_step()
             with self._span("collision_check"):
                 human_hit = human_hit or self._check_human_contact()
                 velocity_exploded = self._check_velocity_explosion()
@@ -510,8 +492,8 @@ class PointNavIsaacEnv:
         )
 
     def _check_human_contact(self) -> bool:
-        """人物との接触判定。接触センサーに加え、距離ベースでも判定する"""
-        if not self._ira_characters:
+        """人物との接触判定。ContactSensorのボディ名一致に加え、距離ベースでも判定する。"""
+        if not self._humans:
             return False
         if any(
             HUMANS_ROOT in body0 or HUMANS_ROOT in body1
@@ -519,11 +501,8 @@ class PointNavIsaacEnv:
         ):
             return True
         pos = self._get_robot_pos()
-        for character in self._ira_characters:
-            hp = character.get_world_position()
-            if hp is None:
-                continue
-            dist = float(np.hypot(hp.x - pos[0], hp.y - pos[1]))
+        for hx, hy in self._human_mgr.get_world_positions_xy():
+            dist = float(np.hypot(hx - pos[0], hy - pos[1]))
             if dist < self.env_cfg.human_collision_dist:
                 return True
         return False
@@ -637,10 +616,6 @@ class PointNavGymEnv(gym.Env):
 
     def step(self, action: np.ndarray):
         return self._env.step(action)
-
-    def regenerate_humans(self) -> None:
-        if self._env is not None:
-            self._env.regenerate_humans()
 
     def render(self):
         pass

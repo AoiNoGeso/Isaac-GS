@@ -3,6 +3,7 @@
 stage/run_name/log_dirはmodels/sac/config.pyのTrainConfigで実験ごとに書き換える。"""
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -11,8 +12,15 @@ parser.add_argument("--headless", action="store_true", default=False)
 parser.add_argument("--checkpoint", type=str, default=None)
 parser.add_argument("--no-wandb", action="store_true", default=False)
 parser.add_argument("--num-humans", type=int, default=None)
-parser.add_argument("--profile", type=int, default=0, help="指定step数だけ計測して終了する(0で無効)")
+parser.add_argument("--profile", type=int, default=0)
+parser.add_argument("--gpu", type=int, default=0)
 args = parser.parse_args()
+
+# CUDA初期化(isaacsim/torch)より前に設定する必要がある。
+# 共用マシンで複数GPUが見える場合、これが無いとIsaac Sim側とPyTorch側で
+# 異なる物理GPUが選ばれ、`weight is on cuda:N, different from other tensors`
+# のようなクラッシュが起きる。
+os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -32,6 +40,7 @@ app = SimulationApp({
     "headless": args.headless,
     "extra_args": [
         "--/rtx/scenedb/maxHistoryTransformCount=256",
+        "--/renderer/activeGpu=0"
         # "--/app/runLoops/main/rateLimitEnabled=false",
     ],
 })
@@ -70,8 +79,7 @@ def validation(
     video_dir: str | None = None,
     step: int = 0,
 ) -> dict:
-    """greedy方策でnum_episodes回評価し成功率・衝突率・タイムアウト率を返す。
-    先頭video_episodes件はローカルに動画を保存する(wandbへは送らない)。"""
+    """greedy方策でnum_episodes回評価し成功率・衝突率・タイムアウト率を返す"""
     successes = wall_collisions = human_collisions = timeouts = 0
     val_bar = tqdm(range(num_episodes), desc="[val]", leave=False, dynamic_ncols=True, file=_OUT)
     for ep_idx in val_bar:
@@ -339,7 +347,6 @@ def train(
             tqdm.write(f"[val] step={step} {val_metrics}", file=_OUT)
             if use_wandb:
                 wandb.log(val_metrics, step=step)
-            env.regenerate_humans()
             obs, reset_info = env.reset()
             tracker.reset(obs, reset_info)
 
