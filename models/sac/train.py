@@ -3,26 +3,18 @@
 stage/run_name/log_dirはmodels/sac/config.pyのTrainConfigで実験ごとに書き換える。"""
 
 import argparse
-import os
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--headless", action="store_true", default=False)
 parser.add_argument("--checkpoint", type=str, default=None)
 parser.add_argument("--no-wandb", action="store_true", default=False)
 parser.add_argument("--num-humans", type=int, default=None)
-parser.add_argument("--profile", type=int, default=0)
-parser.add_argument("--gpu", type=int, default=0)
+parser.add_argument("--gpu", type=int, default=0, help="共用マシンでの複数GPU分散を防ぐため、使用するGPU番号を固定する")
 args = parser.parse_args()
-
-# CUDA初期化(isaacsim/torch)より前に設定する必要がある。
-# 共用マシンで複数GPUが見える場合、これが無いとIsaac Sim側とPyTorch側で
-# 異なる物理GPUが選ばれ、`weight is on cuda:N, different from other tensors`
-# のようなクラッシュが起きる。
-os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 # SimulationApp起動前に検証する(stage未指定なら即座にエラーにする)
 from models.sac.config import TrainConfig
@@ -34,24 +26,10 @@ if Path(f"{train_cfg.log_dir}/sac_final.pt").exists():
         f"このまま実行すると前回の実験結果を上書きします (log_dir/run_nameを変更してください)"
     )
 
-from isaacsim import SimulationApp
+from utils.launch_sim import launch_sim
 
-app = SimulationApp({
-    "headless": args.headless,
-    "extra_args": [
-        "--/rtx/scenedb/maxHistoryTransformCount=256",
-        "--/renderer/activeGpu=0"
-        # "--/app/runLoops/main/rateLimitEnabled=false",
-    ],
-})
+app = launch_sim(headless=args.headless, gpu=args.gpu)
 
-import omni.log
-
-omni.log.get_log().set_channel_level(
-    "omni.physx.plugin", omni.log.Level.ERROR, omni.log.SettingBehavior.OVERRIDE
-)
-
-import cv2
 import torch
 import wandb
 from tqdm import tqdm
@@ -59,107 +37,43 @@ from tqdm import tqdm
 _OUT = sys.stdout
 
 from envs import PointNavGymEnv
-from envs.config import EnvConfig
+from envs.config import EnvConfig, get_preset
 from models.sac.config import ModelConfig, replay_buffer_spec
 from models.sac.network import make_encoder
 from models.sac.policy import ReplayBuffer, SACAgent
 from utils.metrics import EpisodeTracker
-from utils.video import write_frame, write_overhead_frame
+from utils.recorder import EpisodeRecorder, make_overhead_camera
+from utils.rollout import evaluate
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-
-def validation(
-    env,
-    agent,
-    num_episodes: int,
-    video_episodes: int = 0,
-    env_cfg: EnvConfig | None = None,
-    overhead_camera=None,
-    video_dir: str | None = None,
-    step: int = 0,
-) -> dict:
-    """greedy方策でnum_episodes回評価し成功率・衝突率・タイムアウト率を返す"""
-    successes = wall_collisions = human_collisions = timeouts = 0
-    val_bar = tqdm(range(num_episodes), desc="[val]", leave=False, dynamic_ncols=True, file=_OUT)
-    for ep_idx in val_bar:
-        record = ep_idx < video_episodes and env_cfg is not None
-        video_writer = overhead_writer = None
-        video_path = overhead_path = None
-
-        obs, _ = env.reset()
-
-        if record:
-            H, W = env_cfg.camera_resolution[1], env_cfg.camera_resolution[0]
-            fps = 1.0 / env_cfg.rendering_dt
-            out_dir = Path(video_dir) if video_dir else Path("videos") / "val"
-            out_dir.mkdir(parents=True, exist_ok=True)
-            video_path = out_dir / f"step{step}_ep{ep_idx}.mp4"
-            video_writer = cv2.VideoWriter(
-                str(video_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (W, H)
-            )
-            write_frame(video_writer, obs["rgb"])
-            if overhead_camera is not None:
-                ow, oh = overhead_camera.resolution
-                overhead_path = video_path.with_stem(video_path.stem + "_overhead")
-                overhead_writer = cv2.VideoWriter(
-                    str(overhead_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (ow, oh)
-                )
-                orgb, _ = overhead_camera.get_rgbd()
-                write_overhead_frame(overhead_writer, orgb)
-
-        while True:
-            action = agent.act(obs, deterministic=True)
-            obs, reward, terminated, truncated, info = env.step(action)
-            if video_writer is not None:
-                write_frame(video_writer, obs["rgb"])
-            if overhead_writer is not None:
-                orgb, _ = overhead_camera.get_rgbd()
-                write_overhead_frame(overhead_writer, orgb)
-            if terminated or truncated:
-                break
-
-        success, wall_collision, human_collision, timeout = EpisodeTracker.derive_outcome(info)
-
-        if video_writer is not None:
-            video_writer.release()
-            if success:
-                suffix = "_s"
-            elif human_collision:
-                suffix = "_h"
-            elif wall_collision:
-                suffix = "_w"
-            else:
-                suffix = "_t"
-            video_path.rename(video_path.with_stem(video_path.stem + suffix))
-            if overhead_writer is not None:
-                overhead_writer.release()
-                overhead_path.rename(overhead_path.with_stem(overhead_path.stem + suffix))
-
-        successes += int(success)
-        human_collisions += int(human_collision)
-        wall_collisions += int(wall_collision)
-        timeouts += int(timeout)
-        val_bar.set_postfix(success=successes, human=human_collisions, wall=wall_collisions)
-    n = num_episodes
-    return {
-        "val/success_rate": successes / n,
-        "val/human_collision_rate": human_collisions / n,
-        "val/wall_collision_rate": wall_collisions / n,
-        "val/timeout_rate": timeouts / n,
-    }
+# wandbのconfigに残すSACハイパーパラメータ
+_LOGGED_SAC_KEYS = (
+    "buffer_size",
+    "batch_size",
+    "gamma",
+    "tau",
+    "learning_rate",
+    "learning_starts",
+    "train_freq",
+    "gradient_steps",
+    "target_entropy",
+)
 
 
-def _print_profile_summary(profiler) -> None:
-    """区間ごとの平均所要時間[ms]と全体に占める割合を表示する(--profile用、デバッグ機能)"""
-    summary = profiler.summary()
-    total = sum(summary.values())
-    print(f"\n{'=' * 50}\n[profile] 区間別の平均所要時間 (1step換算)\n{'=' * 50}")
-    for name, avg_ms in sorted(summary.items(), key=lambda kv: -kv[1]):
-        pct = (avg_ms / total * 100.0) if total > 0 else 0.0
-        print(f"  {name:16s}: {avg_ms:8.3f} ms  ({pct:5.1f}%)")
-    print(f"  {'合計':16s}: {total:8.3f} ms")
-    print(f"{'=' * 50}\n")
+def validation(env, agent, train_cfg: TrainConfig, recorder, step: int) -> dict:
+    """greedy方策で評価し成功率・衝突率・タイムアウト率をwandbログ用の辞書で返す"""
+    stats = evaluate(
+        env,
+        agent,
+        train_cfg.val_episodes,
+        recorder=recorder,
+        video_episodes=train_cfg.val_video_episodes,
+        stem_fn=lambda ep: f"step{step}_ep{ep}",
+        desc="[val]",
+        leave=False,
+    )
+    return stats.rates("val/")
 
 
 def main():
@@ -179,41 +93,23 @@ def main():
                 "input_rgb": model_cfg.input_rgb,
                 "input_goal": model_cfg.input_goal,
                 "num_humans": env_cfg.num_humans,
-                **{
-                    f"sac/{k}": v
-                    for k, v in train_cfg.model_dump().items()
-                    if k
-                    in (
-                        "buffer_size",
-                        "batch_size",
-                        "gamma",
-                        "tau",
-                        "learning_rate",
-                        "learning_starts",
-                        "train_freq",
-                        "gradient_steps",
-                        "target_entropy",
-                    )
-                },
+                **{f"sac/{k}": getattr(train_cfg, k) for k in _LOGGED_SAC_KEYS},
             },
             dir=train_cfg.log_dir,
         )
 
-    profiler = None
-    if args.profile > 0:
-        from tests.manual.profiling import StepProfiler
-
-        profiler = StepProfiler()
-
-    env = PointNavGymEnv(env_cfg=env_cfg, profiler=profiler)
+    env = PointNavGymEnv(env_cfg=env_cfg)
     obs, reset_info = env.reset()
 
-    overhead_camera = None
-    if train_cfg.val_video_episodes > 0 and not args.headless:
-        from envs.config import get_preset
-        from utils.video import make_overhead_camera
-
-        overhead_camera = make_overhead_camera(get_preset(train_cfg.stage))
+    recorder = None
+    if train_cfg.val_video_episodes > 0:
+        # 俯瞰カメラはレンダリングが必要なためheadlessでは使えない(ロボット視点のみ収録する)
+        recorder = EpisodeRecorder(
+            out_dir=f"{train_cfg.log_dir}/val_videos",
+            fps=1.0 / env_cfg.rendering_dt,
+            robot_resolution=env_cfg.camera_resolution,
+            overhead_camera=None if args.headless else make_overhead_camera(get_preset(train_cfg.stage)),
+        )
 
     obs_spec, obs_dtypes = replay_buffer_spec(model_cfg, env_cfg.camera_resolution)
     action_dim = env.action_space.shape[0]
@@ -236,18 +132,14 @@ def main():
     if args.checkpoint:
         agent.load(args.checkpoint)
 
-    log_dir = train_cfg.log_dir
-    ckpt_dir = f"{log_dir}/checkpoints"
+    ckpt_dir = f"{train_cfg.log_dir}/checkpoints"
     Path(ckpt_dir).mkdir(parents=True, exist_ok=True)
     tracker = EpisodeTracker()
     tracker.reset(obs, reset_info)
 
-    modality_str = (
-        f"rgb={model_cfg.input_rgb}, goal={model_cfg.input_goal}, "
-        f"humans={env_cfg.num_humans}"
-    )
     print(
-        f"[train] modality=({modality_str})  device={DEVICE}  total={train_cfg.total_timesteps:,}"
+        f"[train] modality=(rgb={model_cfg.input_rgb}, goal={model_cfg.input_goal}, "
+        f"humans={env_cfg.num_humans})  device={DEVICE}  total={train_cfg.total_timesteps:,}"
     )
 
     train(
@@ -256,15 +148,9 @@ def main():
         buffer=buffer,
         tracker=tracker,
         obs=obs,
-        reset_info=reset_info,
-        train_cfg=train_cfg,
-        env_cfg=env_cfg,
-        overhead_camera=overhead_camera,
+        recorder=recorder,
         use_wandb=use_wandb,
-        log_dir=log_dir,
         ckpt_dir=ckpt_dir,
-        profiler=profiler,
-        profile_steps=args.profile,
     )
 
     if use_wandb:
@@ -279,45 +165,27 @@ def train(
     buffer: ReplayBuffer,
     tracker: EpisodeTracker,
     obs: dict,
-    reset_info: dict,
-    train_cfg: TrainConfig,
-    env_cfg: EnvConfig,
-    overhead_camera,
+    recorder: EpisodeRecorder | None,
     use_wandb: bool,
-    log_dir: str,
     ckpt_dir: str,
-    profiler=None,
-    profile_steps: int = 0,
 ) -> None:
-    """学習ループ本体。ロールアウト・SAC更新・定期バリデーション・チェックポイント保存を行う。
-    profile_steps>0の場合はそのstep数だけ実行し、区間ごとの計測結果を表示して終了する"""
-    from contextlib import nullcontext
-
-    def span(name: str):
-        return profiler.span(name) if profiler is not None else nullcontext()
-
+    """学習ループ本体。ロールアウト・SAC更新・定期バリデーション・チェックポイント保存を行う"""
     metrics: dict = {}
-    total_steps = profile_steps if profile_steps > 0 else train_cfg.total_timesteps
-    # profile_steps指定時はlearning_startsを待たずagent.update()の計測も取れるようにする
-    learning_starts = min(train_cfg.learning_starts, 10) if profile_steps > 0 else train_cfg.learning_starts
-    pbar = tqdm(range(1, total_steps + 1), dynamic_ncols=True, file=_OUT)
+    pbar = tqdm(range(1, train_cfg.total_timesteps + 1), dynamic_ncols=True, file=_OUT)
     for step in pbar:
-        with span("agent_act"):
-            if len(buffer) < learning_starts:
-                action = env.action_space.sample()
-            else:
-                action = agent.act(obs, deterministic=False)
+        if len(buffer) < train_cfg.learning_starts:
+            action = env.action_space.sample()
+        else:
+            action = agent.act(obs, deterministic=False)
 
         next_obs, reward, terminated, truncated, info = env.step(action)
-        done = terminated or truncated
 
         # タイムアウトによる終了はdone=0として扱う
-        with span("buffer_add"):
-            buffer.add(obs, action, reward, next_obs, float(terminated))
+        buffer.add(obs, action, reward, next_obs, float(terminated))
         tracker.step(reward, info)
         obs = next_obs
 
-        if done:
+        if terminated or truncated:
             ep_metrics = tracker.finish(info)
             tqdm.write(
                 f"episode={ep_metrics['episode/count']:4d}"
@@ -334,38 +202,24 @@ def train(
             tracker.reset(obs, reset_info)
 
         if step % train_cfg.val_interval == 0:
-            val_metrics = validation(
-                env,
-                agent,
-                train_cfg.val_episodes,
-                video_episodes=train_cfg.val_video_episodes,
-                env_cfg=env_cfg,
-                overhead_camera=overhead_camera,
-                video_dir=f"{log_dir}/val_videos",
-                step=step,
-            )
+            val_metrics = validation(env, agent, train_cfg, recorder, step)
             tqdm.write(f"[val] step={step} {val_metrics}", file=_OUT)
             if use_wandb:
                 wandb.log(val_metrics, step=step)
             obs, reset_info = env.reset()
             tracker.reset(obs, reset_info)
 
-        if len(buffer) >= learning_starts and step % train_cfg.train_freq == 0:
-            with span("agent_update"):
-                metrics = agent.update(buffer)
+        if len(buffer) >= train_cfg.learning_starts and step % train_cfg.train_freq == 0:
+            metrics = agent.update(buffer)
             if use_wandb and step % train_cfg.log_interval == 0:
                 wandb.log(metrics, step=step)
 
-        if not profile_steps and step % train_cfg.checkpoint_interval == 0:
+        if step % train_cfg.checkpoint_interval == 0:
             ckpt_path = f"{ckpt_dir}/sac_{step}.pt"
             agent.save(ckpt_path)
             tqdm.write(f"[train] Checkpoint saved: {ckpt_path}", file=_OUT)
 
-    if profile_steps:
-        _print_profile_summary(profiler)
-        return
-
-    final_path = f"{log_dir}/sac_final.pt"
+    final_path = f"{train_cfg.log_dir}/sac_final.pt"
     agent.save(final_path)
     print(f"[train] Final model saved: {final_path}")
 

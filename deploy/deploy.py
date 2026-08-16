@@ -15,15 +15,16 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image
 from tf2_ros import Buffer, TransformListener
 
-from envs.config import JACKAL
+from envs.config import JACKAL, EnvConfig
 from envs.geometry import goal_vec, quat_to_yaw
 from models.sac.policy import SACAgent
 
-# シミュレータのenvs.config.JACKALと値を揃えること
-_IMG_SIZE = 84
+# 学習時と推論時で条件がずれないよう、既定値はすべてシミュレータ側の設定から引く
+_ENV_DEFAULTS = EnvConfig.model_fields
+_IMG_SIZE = _ENV_DEFAULTS["camera_resolution"].default[0]  # 入力画像の一辺 [px]
+_GOAL_THRESHOLD = _ENV_DEFAULTS["goal_threshold"].default  # ゴール到達判定の距離 [m]
 _V_MAX = JACKAL.v_linear_max  # 最大直進速度 [m/s]
 _W_MAX = JACKAL.v_angular_max  # 最大角速度 [rad/s]
-_GOAL_THRESHOLD = 0.4  # ゴール到達判定の距離 [m]
 
 
 def _parse_args():

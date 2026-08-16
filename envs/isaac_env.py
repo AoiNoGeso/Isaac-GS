@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from contextlib import nullcontext
-
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
@@ -13,25 +11,29 @@ from envs.human_controller import HUMANS_ROOT, HumanManager
 # 落下判定
 FALL_Z_THRESHOLD = -50.0
 
+# 物理演算破綻とみなす線形速度 [m/s]
+VELOCITY_EXPLOSION_THRESHOLD = 10.0
+
+
+def _to_numpy(value) -> np.ndarray:
+    """torch.Tensor / numpy のどちらで返ってきてもnumpy配列に揃える"""
+    return value.cpu().numpy() if hasattr(value, "cpu") else np.array(value, dtype=np.float32)
+
 
 class PointNavIsaacEnv:
     """Isaac Sim上でロボットを操作するPoint Navigation環境本体"""
 
-    def __init__(self, env_cfg: EnvConfig, profiler=None):
+    def __init__(self, env_cfg: EnvConfig):
         self.env_cfg = env_cfg
         self.robot_cfg: RobotConfig = env_cfg.robot
         self._step_count = 0
         self._goal_pos = np.zeros(3, dtype=np.float32)
         self._prev_dist = 0.0
-        self._humans: list = []
+        self._has_humans = env_cfg.num_humans > 0
         self._last_omega = 0.0
         self._contact_bodies_error_logged = False
         self._velocity_explosion_error_logged = False
-        self._profiler = profiler
         self._setup()
-
-    def _span(self, name: str):
-        return self._profiler.span(name) if self._profiler is not None else nullcontext()
 
     # ------------------------------------------------------------------
     # 公開アクセサ
@@ -41,7 +43,7 @@ class PointNavIsaacEnv:
         return self._get_robot_pos()
 
     @property
-    def robot_quat(self) -> tuple[float, float, float, float]:
+    def robot_quat(self) -> np.ndarray:
         return self._get_robot_quat()
 
     @property
@@ -53,12 +55,8 @@ class PointNavIsaacEnv:
         return self._compute_goal_vec()
 
     @property
-    def characters(self) -> list:
-        return self._humans
-
-    @property
     def human_positions_xy(self) -> list[tuple[float, float]]:
-        return self._human_mgr.get_world_positions_xy() if self._humans else []
+        return self._human_mgr.get_world_positions_xy() if self._has_humans else []
 
     @property
     def initial_goal_dist(self) -> float:
@@ -77,13 +75,13 @@ class PointNavIsaacEnv:
         from isaacsim.sensors.experimental.physics import Contact, ContactSensor
         from pxr import Gf, PhysxSchema, Usd, UsdGeom, UsdPhysics
 
-        from envs.sensors.camera_sensor import RGBDCamera
+        from envs.sensors.camera_sensor import RGBCamera
 
         robot = self.robot_cfg
         kit_app = omni.kit.app.get_app()
 
         enable_extension("omni.anim.navigation.bundle")
-        if self.env_cfg.num_humans > 0:
+        if self._has_humans:
             # 人物の高さ追従用カプセル(envs/human_controller/human_manager.py)を動かすのに必要。
             enable_extension("omni.physx.cct")
         for _ in range(10):
@@ -127,48 +125,7 @@ class PointNavIsaacEnv:
             env_mat.CreateDynamicFrictionAttr().Set(0.6)
             PhysxSchema.PhysxMaterialAPI(env_mat_prim).CreateFrictionCombineModeAttr().Set("max")
 
-        # NavMesh bake
-        settings = None
-        bake_keys = []
-        bake_vals = []
-        if self.env_cfg.navmesh_agent_radius_cm > 0:
-            bake_keys += [
-                "/exts/omni.anim.navigation.core/navMesh/config/agentMinRadius",
-                "/exts/omni.anim.navigation.core/navMesh/config/agentMaxRadius",
-            ]
-            bake_vals += [float(self.env_cfg.navmesh_agent_radius_cm)] * 2
-        if self.env_cfg.navmesh_agent_height_cm > 0:
-            bake_keys.append(
-                "/exts/omni.anim.navigation.core/navMesh/config/agentMinHeight"
-            )
-            bake_vals.append(float(self.env_cfg.navmesh_agent_height_cm))
-
-        bake_orig = [None] * len(bake_keys)
-        if bake_keys:
-            import carb
-
-            settings = carb.settings.get_settings()
-            bake_orig = [settings.get(k) for k in bake_keys]
-            for k, v in zip(bake_keys, bake_vals):
-                settings.set(k, v)
-
-        vis_prims = []
-        for path in (self.env_cfg.floor_prim_path, self.env_cfg.wall_prim_path):
-            p = stage.GetPrimAtPath(path)
-            if p.IsValid():
-                UsdGeom.Imageable(p).MakeVisible()
-                vis_prims.append(p)
-        for _ in range(10):
-            self._world.step(render=True)
-
-        self._inav.start_navmesh_baking_and_wait()
-
-        for p in vis_prims:
-            UsdGeom.Imageable(p).MakeInvisible()
-        if settings is not None:
-            for k, v in zip(bake_keys, bake_orig):
-                if v is not None:
-                    settings.set(k, v)
+        self._bake_navmesh(stage)
 
         self._robot = Articulation(prim_paths_expr=robot.prim_path)
         self._robot.initialize()
@@ -200,7 +157,7 @@ class PointNavIsaacEnv:
         self._contact_sensor = ContactSensor(contact_authoring)
         self._contact_sensor.add_raw_contact_data_to_frame()
 
-        self._camera = RGBDCamera(
+        self._camera = RGBCamera(
             camera_prim_path=robot.camera_prim_path,
             resolution=self.env_cfg.camera_resolution,
             translation=(
@@ -219,7 +176,52 @@ class PointNavIsaacEnv:
             self._setup_camera_viewport()
 
         self._human_mgr = HumanManager(self.env_cfg, self._world, self._inav)
-        self._humans = self._human_mgr.inject_humans(stage) if self.env_cfg.num_humans > 0 else []
+        if self._has_humans:
+            self._human_mgr.inject_humans(stage)
+
+    def _bake_navmesh(self, stage) -> None:
+        """床・壁メッシュを一時的に可視化してNavMeshをbakeする
+        bake中だけagent半径・天井高の設定を上書きし、終了後に元の値へ戻す"""
+        from pxr import UsdGeom
+
+        bake_settings = {}
+        if self.env_cfg.navmesh_agent_radius_cm > 0:
+            radius = float(self.env_cfg.navmesh_agent_radius_cm)
+            bake_settings["/exts/omni.anim.navigation.core/navMesh/config/agentMinRadius"] = radius
+            bake_settings["/exts/omni.anim.navigation.core/navMesh/config/agentMaxRadius"] = radius
+        if self.env_cfg.navmesh_agent_height_cm > 0:
+            bake_settings["/exts/omni.anim.navigation.core/navMesh/config/agentMinHeight"] = float(
+                self.env_cfg.navmesh_agent_height_cm
+            )
+
+        settings = None
+        original = {}
+        if bake_settings:
+            import carb
+
+            settings = carb.settings.get_settings()
+            original = {k: settings.get(k) for k in bake_settings}
+            for k, v in bake_settings.items():
+                settings.set(k, v)
+
+        # NavMeshは可視なメッシュからしか生成されないため、bakeの間だけ表示する
+        vis_prims = []
+        for path in (self.env_cfg.floor_prim_path, self.env_cfg.wall_prim_path):
+            p = stage.GetPrimAtPath(path)
+            if p.IsValid():
+                UsdGeom.Imageable(p).MakeVisible()
+                vis_prims.append(p)
+        for _ in range(10):
+            self._world.step(render=True)
+
+        self._inav.start_navmesh_baking_and_wait()
+
+        for p in vis_prims:
+            UsdGeom.Imageable(p).MakeInvisible()
+        if settings is not None:
+            for k, v in original.items():
+                if v is not None:
+                    settings.set(k, v)
 
     def _setup_camera_viewport(self):
         try:
@@ -247,9 +249,7 @@ class PointNavIsaacEnv:
 
         if self.env_cfg.fixed_goal_pos is not None:
             self._goal_pos = np.array(self.env_cfg.fixed_goal_pos, dtype=np.float32)
-            self._prev_dist = float(
-                np.linalg.norm(self._goal_pos[[0, 1]] - robot_pos[[0, 1]])
-            )
+            self._prev_dist = self._dist_to_goal(robot_pos)
         else:
             best_goal, best_dist = robot_pos.copy(), 0.0
             for _ in range(50):
@@ -262,10 +262,7 @@ class PointNavIsaacEnv:
             self._goal_pos = best_goal
             self._prev_dist = best_dist
 
-        if self.env_cfg.fixed_spawn_yaw_deg is not None:
-            spawn_yaw = float(np.radians(self.env_cfg.fixed_spawn_yaw_deg))
-        else:
-            spawn_yaw = float(np.random.uniform(-np.pi, np.pi))
+        spawn_yaw = self._sample_spawn_yaw()
 
         for _ in range(10):
             self._teleport_robot(robot_pos, yaw=spawn_yaw)
@@ -284,101 +281,40 @@ class PointNavIsaacEnv:
         self._teleport_robot(robot_pos, yaw=spawn_yaw)
         self._world.step(render=True)
 
-        if self._humans:
-            self._human_mgr.reset_humans(self._humans)
+        if self._has_humans:
+            self._human_mgr.reset_humans()
 
         return self._get_obs()
 
     def step(self, action: np.ndarray) -> tuple[dict, float, bool, bool, dict]:
         """行動[v_x, ω]を1ステップ実行し(obs, reward, terminated, truncated, info)を返す"""
-        robot = self.robot_cfg
-        v_x = float(np.clip(action[0], -1.0, 1.0)) * robot.v_linear_max
-        omega = float(np.clip(action[1], -1.0, 1.0)) * robot.v_angular_max
-        self._last_omega = omega
-        v_L = v_x - omega * robot.wheel_base / 2.0
-        v_R = v_x + omega * robot.wheel_base / 2.0
-        # ホイール接地点の線形速度 [m/s] → joint角速度 [rad/s]
-        w_L = v_L / robot.wheel_radius
-        w_R = v_R / robot.wheel_radius
-
-        vel_target = np.zeros(self._robot.num_dof, dtype=np.float32)
-        for idx in self._left_wheel_idx:
-            vel_target[idx] = w_L
-        for idx in self._right_wheel_idx:
-            vel_target[idx] = w_R
-        self._robot.set_joint_velocity_targets(velocities=vel_target[np.newaxis, :])
+        self._apply_action(action)
 
         result = None
         human_hit = False
         for i in range(self.env_cfg.decimation):
-            if self._humans:
-                with self._span("human_step"):
-                    self._human_mgr.pre_physics_step(self.env_cfg.physics_dt)
-            with self._span("world_step"):
-                self._world.step(render=(i == self.env_cfg.decimation - 1))
-            if self._humans:
-                with self._span("human_step_post"):
-                    self._human_mgr.post_physics_step()
-            with self._span("collision_check"):
-                human_hit = human_hit or self._check_human_contact()
-                velocity_exploded = self._check_velocity_explosion()
+            if self._has_humans:
+                self._human_mgr.pre_physics_step(self.env_cfg.physics_dt)
+            self._world.step(render=(i == self.env_cfg.decimation - 1))
+            if self._has_humans:
+                self._human_mgr.post_physics_step()
 
-            if velocity_exploded:
+            human_hit = human_hit or self._check_human_contact()
+
+            if self._check_velocity_explosion():
                 self._recover_physics()
-                obs = self._get_obs()
-                pos = self._get_robot_pos()
-                dist = float(np.linalg.norm(self._goal_pos[[0, 1]] - pos[[0, 1]]))
-                result = (
-                    obs,
-                    float(self.env_cfg.r_collision),
-                    True,
-                    False,
-                    {
-                        "success": False,
-                        "collision": True,
-                        "timeout": False,
-                        "dist": dist,
-                        "dist_final": dist,
-                        "robot_xz": pos[[0, 1]],  # 実際はXY座標
-                    },
-                )
+                result = self._collision_termination()
                 break
 
-            with self._span("collision_check"):
-                wall_contact = (
-                    self._step_count >= self.env_cfg.collision_grace_steps
-                    and self._check_wall_contact()
-                )
-            if wall_contact:
-                self._robot.set_joint_velocity_targets(
-                    velocities=np.zeros((1, self._robot.num_dof), dtype=np.float32)
-                )
-                obs = self._get_obs()
-                pos = self._get_robot_pos()
-                dist = float(np.linalg.norm(self._goal_pos[[0, 1]] - pos[[0, 1]]))
-                self._prev_dist = dist
-                result = (
-                    obs,
-                    float(self.env_cfg.r_collision),
-                    True,
-                    False,
-                    {
-                        "success": False,
-                        "collision": True,
-                        "timeout": False,
-                        "dist": dist,
-                        "dist_final": dist,
-                        "robot_xz": pos[[0, 1]],  # 実際はXY座標
-                    },
-                )
+            if not self._in_collision_grace() and self._check_wall_contact():
+                self._stop_wheels()
+                result = self._collision_termination()
                 break
 
         if result is None:
             self._step_count += 1
-            with self._span("get_obs"):
-                obs = self._get_obs()
-            with self._span("compute_reward"):
-                reward, info = self._compute_reward()
+            obs = self._get_obs()
+            reward, info = self._compute_reward()
             terminated = info["success"] or info["collision"]
             truncated = self._step_count >= self.env_cfg.max_episode_steps
             if truncated:
@@ -388,9 +324,9 @@ class PointNavIsaacEnv:
 
         obs, reward, terminated, truncated, info = result
 
-        hc = human_hit or self._check_human_contact()
-        info["human_collision"] = hc
-        if hc and not info["success"]:
+        human_collision = human_hit or self._check_human_contact()
+        info["human_collision"] = human_collision
+        if human_collision and not info["success"]:
             # 壁衝突等と同時発生時は人物衝突を優先(ゴール到達時のみ上書きしない)
             reward = float(self.env_cfg.r_human_collision)
             terminated = True
@@ -399,70 +335,118 @@ class PointNavIsaacEnv:
 
         return obs, reward, terminated, truncated, info
 
+    def _apply_action(self, action: np.ndarray) -> None:
+        """行動[v_x, ω]を差動二輪のjoint角速度目標へ変換して指令する"""
+        robot = self.robot_cfg
+        v_x = float(np.clip(action[0], -1.0, 1.0)) * robot.v_linear_max
+        omega = float(np.clip(action[1], -1.0, 1.0)) * robot.v_angular_max
+        self._last_omega = omega
+
+        v_left = v_x - omega * robot.wheel_base / 2.0
+        v_right = v_x + omega * robot.wheel_base / 2.0
+        # ホイール接地点の線形速度 [m/s] → joint角速度 [rad/s]
+        w_left = v_left / robot.wheel_radius
+        w_right = v_right / robot.wheel_radius
+
+        vel_target = np.zeros(self._robot.num_dof, dtype=np.float32)
+        for idx in self._left_wheel_idx:
+            vel_target[idx] = w_left
+        for idx in self._right_wheel_idx:
+            vel_target[idx] = w_right
+        self._robot.set_joint_velocity_targets(velocities=vel_target[np.newaxis, :])
+
+    def _stop_wheels(self) -> None:
+        self._robot.set_joint_velocity_targets(
+            velocities=np.zeros((1, self._robot.num_dof), dtype=np.float32)
+        )
+
+    def _collision_termination(self) -> tuple[dict, float, bool, bool, dict]:
+        """衝突・物理破綻でエピソードを即座に打ち切る際の戻り値を組み立てる"""
+        obs = self._get_obs()
+        pos = self._get_robot_pos()
+        dist = self._dist_to_goal(pos)
+        self._prev_dist = dist
+        info = self._episode_info(pos, dist, success=False, collision=True)
+        return obs, float(self.env_cfg.r_collision), True, False, info
+
+    def _episode_info(
+        self, pos: np.ndarray, dist: float, success: bool, collision: bool, timeout: bool = False
+    ) -> dict:
+        """全ての終了経路で共通のinfo辞書を組み立てる"""
+        return {
+            "success": success,
+            "collision": collision,
+            "timeout": timeout,
+            "dist": dist,
+            "robot_xy": pos[[0, 1]],
+        }
+
     def _get_obs(self) -> dict:
-        """rgb/depth/goalの3キーからなる観測を生成する"""
-        rgb, depth = self._camera.get_rgbd()
+        """rgb/goalの2キーからなる観測を生成する"""
+        rgb = self._camera.get_rgb()
         return {
             "rgb": (rgb.astype(np.float32) / 255.0).transpose(2, 0, 1),
-            "depth": depth[np.newaxis, :, :].astype(np.float32),
             "goal": self._compute_goal_vec(),
         }
 
+    def _dist_to_goal(self, pos: np.ndarray) -> float:
+        """ロボットからゴールまでの水平距離 [m]"""
+        return float(np.linalg.norm(self._goal_pos[[0, 1]] - pos[[0, 1]]))
+
     def _compute_goal_vec(self) -> np.ndarray:
         """ロボットから見たゴールまでの[距離, 相対角度/π]を計算する"""
-        pos = self._get_robot_pos()
-        w, qx, qy, qz = self._get_robot_quat()
-        yaw = quat_to_yaw(w, qx, qy, qz)
+        pos, quat = self._get_robot_pose()
+        yaw = quat_to_yaw(*quat)
         return goal_vec(pos[0], pos[1], yaw, self._goal_pos[0], self._goal_pos[1])
 
     def _compute_reward(self) -> tuple[float, dict]:
         """今フレームの報酬とinfo(success/collision等)を計算する"""
         pos = self._get_robot_pos()
-        cur_dist = float(np.linalg.norm(self._goal_pos[[0, 1]] - pos[[0, 1]]))
+        cur_dist = self._dist_to_goal(pos)
         success = cur_dist < self.env_cfg.goal_threshold
         collision = self._check_collision()
         rollover = self._check_rollover()
         angle_rel = float(self._compute_goal_vec()[1]) * np.pi
-        omega = self._last_omega
         reward = (
             self.env_cfg.r_dist * (self._prev_dist - cur_dist)
             + self.env_cfg.r_heading * float(np.cos(angle_rel))
             + self.env_cfg.r_collision * float(collision)
             + self.env_cfg.r_rollover * float(rollover)
             + self.env_cfg.r_success * float(success)
-            + self.env_cfg.r_spin * float(omega**2)
+            + self.env_cfg.r_spin * float(self._last_omega**2)
             + self.env_cfg.r_time
         )
         self._prev_dist = cur_dist
-        return reward, {
-            "success": success,
-            "collision": collision or rollover,
-            "timeout": False,
-            "dist": cur_dist,
-            "dist_final": cur_dist,
-            "robot_xz": pos[[0, 1]],  # 実際はXY座標
-        }
+        return reward, self._episode_info(
+            pos, cur_dist, success=success, collision=collision or rollover
+        )
+
+    # ------------------------------------------------------------------
+    # 衝突・破綻の判定
+    # ------------------------------------------------------------------
+    def _in_collision_grace(self) -> bool:
+        """エピソード開始直後は衝突判定を猶予する"""
+        return self._step_count < self.env_cfg.collision_grace_steps
 
     def _check_rollover(self) -> bool:
         """ロボットが転倒しているかを姿勢から判定する"""
-        w, qx, qy, qz = self._get_robot_quat()
+        _, qx, qy, _ = self._get_robot_quat()
         return float(1.0 - 2.0 * (qx * qx + qy * qy)) < self.robot_cfg.rollover_threshold
 
     def _check_velocity_explosion(self) -> bool:
         """物理演算が破綻して速度や位置が異常値になっていないか確認する"""
         try:
             linvel = self._robot.get_linear_velocities()
-            if linvel is not None and float(np.max(np.abs(linvel))) > 10.0:
+            if linvel is not None and float(np.max(np.abs(linvel))) > VELOCITY_EXPLOSION_THRESHOLD:
                 return True
-            if not all(np.isfinite(self._get_robot_pos())):
-                return True
+            return not all(np.isfinite(self._get_robot_pos()))
         except Exception:
             if not self._velocity_explosion_error_logged:
                 import carb
 
                 carb.log_error("[PointNavIsaacEnv] _check_velocity_explosion で例外発生")
                 self._velocity_explosion_error_logged = True
-        return False
+            return False
 
     def _contact_bodies(self) -> list[tuple[str, str]]:
         """ロボットの接触センサーが検知した接触相手のprimパス一覧を返す"""
@@ -492,8 +476,8 @@ class PointNavIsaacEnv:
         )
 
     def _check_human_contact(self) -> bool:
-        """人物との接触判定。ContactSensorのボディ名一致に加え、距離ベースでも判定する。"""
-        if not self._humans:
+        """人物との接触判定。ContactSensorのボディ名一致に加え、距離ベースでも判定する"""
+        if not self._has_humans:
             return False
         if any(
             HUMANS_ROOT in body0 or HUMANS_ROOT in body1
@@ -501,21 +485,22 @@ class PointNavIsaacEnv:
         ):
             return True
         pos = self._get_robot_pos()
-        for hx, hy in self._human_mgr.get_world_positions_xy():
-            dist = float(np.hypot(hx - pos[0], hy - pos[1]))
-            if dist < self.env_cfg.human_collision_dist:
-                return True
-        return False
+        return any(
+            float(np.hypot(hx - pos[0], hy - pos[1])) < self.env_cfg.human_collision_dist
+            for hx, hy in self._human_mgr.get_world_positions_xy()
+        )
 
     def _check_collision(self) -> bool:
         """壁衝突または落下による衝突判定(エピソード開始直後は猶予)"""
-        if self._step_count < self.env_cfg.collision_grace_steps:
+        if self._in_collision_grace():
             return False
         if self._check_wall_contact():
             return True
-        pos = self._get_robot_pos()
-        return float(pos[2]) < FALL_Z_THRESHOLD
+        return float(self._get_robot_pos()[2]) < FALL_Z_THRESHOLD
 
+    # ------------------------------------------------------------------
+    # 位置・姿勢の操作
+    # ------------------------------------------------------------------
     def _recover_physics(self):
         """物理演算破綻からの復帰。安全な位置へテレポートし直す"""
         safe_pos = self._sample_navmesh_point()
@@ -539,13 +524,16 @@ class PointNavIsaacEnv:
                     return pos
         return np.zeros(3, dtype=np.float32)
 
+    def _sample_spawn_yaw(self) -> float:
+        """スポーン時のyaw [rad](固定値が未設定ならランダム)"""
+        if self.env_cfg.fixed_spawn_yaw_deg is not None:
+            return float(np.radians(self.env_cfg.fixed_spawn_yaw_deg))
+        return float(np.random.uniform(-np.pi, np.pi))
+
     def _teleport_robot(self, pos: np.ndarray, yaw: float | None = None):
         """ロボットを指定位置・向きへ瞬間移動させ、速度をリセットする"""
         if yaw is None:
-            if self.env_cfg.fixed_spawn_yaw_deg is not None:
-                yaw = float(np.radians(self.env_cfg.fixed_spawn_yaw_deg))
-            else:
-                yaw = float(np.random.uniform(-np.pi, np.pi))
+            yaw = self._sample_spawn_yaw()
         half = yaw / 2.0
         quat = np.array([[np.cos(half), 0.0, 0.0, np.sin(half)]], dtype=np.float32)
         self._robot.set_world_poses(
@@ -558,39 +546,32 @@ class PointNavIsaacEnv:
         self._robot.set_linear_velocities(np.zeros((1, 3), dtype=np.float32))
         self._robot.set_angular_velocities(np.zeros((1, 3), dtype=np.float32))
 
+    def _get_robot_pose(self) -> tuple[np.ndarray, np.ndarray]:
+        """ロボットの(位置, クォータニオン(w,x,y,z))をまとめて取得する"""
+        pos, quat = self._robot.get_world_poses()
+        return _to_numpy(pos[0]), _to_numpy(quat[0])
+
     def _get_robot_pos(self) -> np.ndarray:
-        pos, _ = self._robot.get_world_poses()
-        return (
-            pos[0].cpu().numpy()
-            if hasattr(pos[0], "cpu")
-            else np.array(pos[0], dtype=np.float32)
-        )
+        return self._get_robot_pose()[0]
 
     def _get_robot_quat(self) -> np.ndarray:
-        _, quat = self._robot.get_world_poses()
-        return (
-            quat[0].cpu().numpy()
-            if hasattr(quat[0], "cpu")
-            else np.array(quat[0], dtype=np.float32)
-        )
+        return self._get_robot_pose()[1]
 
     def close(self):
         self._world.stop()
 
 
 class PointNavGymEnv(gym.Env):
-    """gymnasium.Envラッパー, RGB・Depth・goalを発行"""
+    """gymnasium.Envラッパー, RGBとgoalを発行"""
 
-    def __init__(self, env_cfg: EnvConfig, profiler=None):
+    def __init__(self, env_cfg: EnvConfig):
         super().__init__()
         self.env_cfg = env_cfg
-        self._profiler = profiler  # デバッグ用計測フック(tests/manual/profiling.py)。既定Noneで無効
         W, H = self.env_cfg.camera_resolution
 
         self.observation_space = spaces.Dict(
             {
                 "rgb": spaces.Box(0.0, 1.0, shape=(3, H, W), dtype=np.float32),
-                "depth": spaces.Box(0.0, np.inf, shape=(1, H, W), dtype=np.float32),
                 "goal": spaces.Box(
                     low=np.array([0.0, -1.0], dtype=np.float32),
                     high=np.array([np.inf, 1.0], dtype=np.float32),
@@ -603,7 +584,7 @@ class PointNavGymEnv(gym.Env):
 
     def _lazy_init(self):
         if self._env is None:
-            self._env = PointNavIsaacEnv(self.env_cfg, profiler=self._profiler)
+            self._env = PointNavIsaacEnv(self.env_cfg)
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         """`seed`は無視される(NavMeshのランダムサンプリングはPythonから制御不能なため、

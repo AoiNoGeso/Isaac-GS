@@ -80,9 +80,11 @@ class ReplayBuffer:
                 x = x.astype(np.float32) / 255.0
             return torch.FloatTensor(x).to(self._dev)
 
+        def to_t_plain(arr: np.ndarray):
+            return torch.FloatTensor(arr).to(self._dev)
+
         obs = {k: to_t(k, self._obs[k]) for k in self._obs}
         next_obs = {k: to_t(k, self._next_obs[k]) for k in self._next_obs}
-        to_t_plain = lambda x: torch.FloatTensor(x).to(self._dev)
         return (
             obs,
             to_t_plain(self._actions[idx]),

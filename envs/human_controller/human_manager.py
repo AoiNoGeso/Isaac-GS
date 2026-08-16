@@ -70,8 +70,8 @@ class HumanManager:
 
     使い方:
         mgr = HumanManager(env_cfg, world, inav)
-        humans = mgr.inject_humans(stage)       # setup時
-        mgr.reset_humans(humans)                # エピソード開始時
+        mgr.inject_humans(stage)                # setup時
+        mgr.reset_humans()                      # エピソード開始時
         mgr.pre_physics_step(physics_dt)        # world.step()の直前
         world.step(...)
         mgr.post_physics_step()                 # world.step()の直後
@@ -82,12 +82,14 @@ class HumanManager:
         self._world = world
         self._inav = inav
         self._controller_factory = controller_factory or _default_controller_factory(
-            getattr(env_cfg, "human_controller", "orca")
+            env_cfg.human_controller
         )
         self._controller: Optional[CrowdController] = None
         self._pool: Optional[LocomotionPool] = None
         self._states: list[_HumanState] = []
         self._cct_iface = None  # _build_capsule_cctで初期化する高さ追従用CCTインターフェース
+        self._max_speed = env_cfg.human_speed_range[-1]  # 歩行の目標速度 [m/s]
+        self._radius = env_cfg.human_radius
 
     # ------------------------------------------------------------------
     # NavMeshサンプリング
@@ -106,21 +108,18 @@ class HumanManager:
                 return float(pos[0]), float(pos[1]), float(pos[2])
         return None
 
-    def _sample_navmesh_point_xy(self) -> Optional[tuple[float, float]]:
-        pt = self._sample_navmesh_point_xyz()
-        return (pt[0], pt[1]) if pt is not None else None
-
     def _sample_goal_min_dist_xy(
         self, from_xy: tuple[float, float], attempts: int = 10
     ) -> Optional[tuple[float, float]]:
         """`from_xy`から`human_min_goal_dist`以上離れたNavMesh上の点を探す
         (既定回数試行し、満たせなければ一番遠かった点で妥協する)"""
-        min_dist = getattr(self.env_cfg, "human_min_goal_dist", 0.0)
+        min_dist = self.env_cfg.human_min_goal_dist
         best_goal, best_dist = from_xy, 0.0
         for _ in range(attempts):
-            candidate = self._sample_navmesh_point_xy()
-            if candidate is None:
+            point = self._sample_navmesh_point_xyz()
+            if point is None:
                 continue
+            candidate = (point[0], point[1])
             dist = float(np.hypot(candidate[0] - from_xy[0], candidate[1] - from_xy[1]))
             if dist > best_dist:
                 best_goal, best_dist = candidate, dist
@@ -142,14 +141,13 @@ class HumanManager:
     # ------------------------------------------------------------------
     # セットアップ
     # ------------------------------------------------------------------
-    def inject_humans(self, stage) -> list[int]:
+    def inject_humans(self, stage) -> None:
         """人物アバターをstageに注入する(num_humans<=0の場合は何もしない)"""
         num_humans = self.env_cfg.num_humans
         if num_humans <= 0:
-            return []
+            return
 
-        max_speed = getattr(self.env_cfg, "human_speed_range", (1.0, 1.0))[-1]
-        radius = getattr(self.env_cfg, "human_radius", 0.35)
+        max_speed, radius = self._max_speed, self._radius
         self._controller = self._controller_factory(max_speed, radius)
         self._register_navmesh_boundary_obstacles()
 
@@ -189,7 +187,6 @@ class HumanManager:
                     capsule_half_height=CAPSULE_CYLINDER_HEIGHT / 2.0 + radius,
                 )
             )
-        return list(range(num_humans))
 
     def _build_capsule_cct(self, stage, index: int, spawn_xyz: tuple[float, float, float], radius: float):
         """高さ(Z)追従専用の、見えないPhysX Character Controllerカプセルを用意する
@@ -299,10 +296,10 @@ class HumanManager:
     # ------------------------------------------------------------------
     # reset / step
     # ------------------------------------------------------------------
-    def reset_humans(self, characters: list[int]) -> None:
+    def reset_humans(self) -> None:
         """各人物の位置・ゴールをNavMesh上の新しいランダム点へ再サンプリングし、
         アバターの描画位置(x,y,z)も瞬間移動させる(prim自体は作り直さない)"""
-        if not characters or self._controller is None:
+        if self._controller is None:
             return
         from pxr import Gf
 
@@ -325,7 +322,6 @@ class HumanManager:
         if self._controller is None or self._pool is None:
             return
 
-        max_speed = getattr(self.env_cfg, "human_speed_range", (1.0, 1.0))[-1]
         for i, state in enumerate(self._states):
             pos = np.array(self._controller.get_position(state.agent_id))
 
@@ -338,17 +334,13 @@ class HumanManager:
             to_goal = np.array(state.goal_xy) - pos
             dist = float(np.linalg.norm(to_goal))
             if dist > GOAL_REACH_THRESHOLD and state.stuck_steps < STUCK_STEPS_LIMIT:
-                pref = tuple(to_goal / dist * max_speed)
+                pref = tuple(to_goal / dist * self._max_speed)
             else:
                 reason = "スタック検出" if dist > GOAL_REACH_THRESHOLD else "ゴール"
                 new_goal = self._sample_goal_min_dist_xy(tuple(pos))
                 if new_goal is not None:
                     state.goal_xy = new_goal
                     state.stuck_steps = 0
-                    print(
-                        f"[HumanManager] Human{i} {reason}！次のゴール="
-                        f"({new_goal[0]:.2f}, {new_goal[1]:.2f}, {state.height_z:.2f})"
-                    )
                 pref = (0.0, 0.0)
             self._controller.set_preferred_velocity(state.agent_id, pref)
 
@@ -361,8 +353,6 @@ class HumanManager:
         world_positions = self._pool.ground_positions_world_xy()
         for state, (wx, wy) in zip(self._states, world_positions):
             self._controller.set_position(state.agent_id, (wx, wy))
-            # カプセルの水平位置はteleportで追従させるだけZは物理(重力+床コリジョン)に
-            # 任せるため、set_move(0,0,0)を毎フレーム呼んでカプセルを"生かして"おく
             self._cct_iface.set_position(state.capsule_path, (wx, wy, state.height_z + state.capsule_half_height))
             self._cct_iface.set_move(state.capsule_path, (0.0, 0.0, 0.0))
 

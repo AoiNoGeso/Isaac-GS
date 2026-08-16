@@ -13,7 +13,7 @@ dependencies = [
     "pydantic>=2.0",
     # プログレスバー
     "tqdm>=4.0",
-    # 動画書き出し（test.py --video で使用）
+    # 動画書き出し（utils/recorder.py で使用）
     "opencv-python>=4.0",
 ]
 
@@ -28,6 +28,3 @@ managed = false
 
 [tool.setuptools.packages.find]
 include = ["envs*", "models*", "stage_generation*", "utils*"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]

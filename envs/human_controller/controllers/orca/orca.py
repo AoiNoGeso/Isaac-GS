@@ -4,11 +4,10 @@
 
 インストール:
   uv run python -m pip install --no-build-isolation "git+https://github.com/sybrenstuvel/Python-RVO2.git"
-  (PyPIには無く、ソースビルドが必要。事前にCythonが必要: pip install Cython)
 """
 
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Tuple
 
 import rvo2
 
@@ -48,7 +47,6 @@ class ORCASimulator:
             self.config.radius,
             self.config.max_speed,
         )
-        self._agent_ids: Dict[int, int] = {}  # 自前のagent_id -> rvo2内部handleの対応(現状は1:1)
 
     def add_agent(
         self,
@@ -57,8 +55,9 @@ class ORCASimulator:
         max_speed: float = None,
         velocity: Tuple[float, float] = (0.0, 0.0),
     ) -> int:
-        """position/velocityは呼び出し側が定義する2D水平面座標。戻り値はagent_id。"""
-        handle = self._sim.addAgent(
+        """position/velocityは呼び出し側が定義する2D水平面座標。戻り値はagent_id
+        (rvo2が返すhandleをそのままagent_idとして使う)。"""
+        return self._sim.addAgent(
             tuple(position),
             self.config.neighbor_dist,
             self.config.max_neighbors,
@@ -68,8 +67,6 @@ class ORCASimulator:
             max_speed if max_speed is not None else self.config.max_speed,
             tuple(velocity),
         )
-        self._agent_ids[handle] = handle
-        return handle
 
     def add_static_obstacle(self, vertices: list):
         """静的障害物(時計回りの頂点列, [(h0,h1), ...])を追加する。
