@@ -8,15 +8,18 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-ASSETS_DIR = REPO_ROOT / "assets" / "ai4animation"
-DEMO_SUPPORT_DIR = Path(__file__).resolve().parent / "_ai4anim_demo_support"
-MODEL_GLB = str(ASSETS_DIR / "Model.glb")
-NETWORK_PT = str(ASSETS_DIR / "Network.pt")
-POSTPROCESSOR_PT = str(ASSETS_DIR / "PostProcessor.pt")
-GUIDANCES_DIR = ASSETS_DIR / "Guidances"
+
+_AI4ANIM_ROOT = REPO_ROOT / "submodules" / "ai4animationpy"
+_GENO_ASSET_DIR = _AI4ANIM_ROOT / "Demos" / "_ASSETS_" / "Geno"
+_BIPED_DEMO_DIR = _AI4ANIM_ROOT / "Demos" / "Locomotion" / "Biped"
+MODEL_GLB = str(_GENO_ASSET_DIR / "Model.glb")
+NETWORK_PT = str(_BIPED_DEMO_DIR / "Models" / "Network.pt")
+POSTPROCESSOR_PT = str(_BIPED_DEMO_DIR / "Models" / "PostProcessor.pt")
+GUIDANCES_DIR = _BIPED_DEMO_DIR / "Guidances"
+
+AVATARS_DIR = REPO_ROOT / "assets" / "avatars"
 
 SEQUENCE_WINDOW = 0.5
 SEQUENCE_LENGTH = 16
@@ -48,8 +51,9 @@ def _lazy_import_ai4anim():
     """ai4animationpy本体はSimulationApp起動後、初回使用時にのみimportする"""
     import sys
 
-    if str(DEMO_SUPPORT_DIR) not in sys.path:
-        sys.path.insert(0, str(DEMO_SUPPORT_DIR))
+    for demo_dir in (_GENO_ASSET_DIR, _BIPED_DEMO_DIR):
+        if str(demo_dir) not in sys.path:
+            sys.path.insert(0, str(demo_dir))
     import Definitions
     from ai4animation import (
         Actor,
@@ -88,6 +92,8 @@ class SharedLocomotionModel:
 
     @classmethod
     def load(cls) -> "SharedLocomotionModel":
+        import torch
+
         model = torch.load(NETWORK_PT, weights_only=False)
         model.eval()
         post = torch.load(POSTPROCESSOR_PT, weights_only=False)

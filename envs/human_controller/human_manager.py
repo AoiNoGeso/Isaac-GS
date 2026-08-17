@@ -8,7 +8,7 @@ from typing import Callable, Optional
 import numpy as np
 
 from envs.human_controller.base import CrowdController
-from envs.human_controller.locomotion import BONE_PARENTS, MODEL_GLB, LocomotionPool
+from envs.human_controller.locomotion import AVATARS_DIR, BONE_PARENTS, MODEL_GLB, LocomotionPool
 
 HUMANS_ROOT = "/World/Humans"
 
@@ -23,8 +23,7 @@ CAPSULE_CYLINDER_HEIGHT = 1.0  # 円柱部分の高さ[m](半球キャップ含�
 CAPSULE_SLOPE_LIMIT_DEG = 45.0
 CAPSULE_STEP_OFFSET = 0.3  # 乗り越えられる段差の高さ[m]
 
-# 歩行モデル名 -> CrowdController生成関数のレジストリSocialForceModel/AVOCADO等を
-# 追加する際はここに1行足すだけでenvs/config.pyのhuman_controllerから選べる
+# 歩行モデル名 -> CrowdController生成関数のレジストリSocialForceModel/AVOCADO等を追加する際はここに1行足すだけでenvs/config.pyのhuman_controllerから選べる
 _CONTROLLER_REGISTRY: dict[str, Callable[[float, float], CrowdController]] = {}
 
 
@@ -70,11 +69,13 @@ class HumanManager:
 
     使い方:
         mgr = HumanManager(env_cfg, world, inav)
-        mgr.inject_humans(stage)                # setup時
-        mgr.reset_humans()                      # エピソード開始時
-        mgr.pre_physics_step(physics_dt)        # world.step()の直前
+        mgr.inject_humans(stage)                          # setup時
+        mgr.reset_humans()                                # エピソード開始時
+        mgr.pre_physics_step(physics_dt, robot_pos_xy, robot_vel_xy)  # world.step()の直前
         world.step(...)
-        mgr.post_physics_step()                 # world.step()の直後
+        mgr.post_physics_step()                           # world.step()の直後
+
+    ロボットはCrowdControllerへagent(人物と対等な回避責任1:1のreciprocal avoidance対象)として登録
     """
 
     def __init__(self, env_cfg, world, inav, controller_factory: Optional[Callable] = None):
@@ -90,6 +91,7 @@ class HumanManager:
         self._cct_iface = None  # _build_capsule_cctで初期化する高さ追従用CCTインターフェース
         self._max_speed = env_cfg.human_speed_range[-1]  # 歩行の目標速度 [m/s]
         self._radius = env_cfg.human_radius
+        self._robot_agent_id: Optional[int] = None  # 初回pre_physics_step()で遅延登録する
 
     # ------------------------------------------------------------------
     # NavMeshサンプリング
@@ -259,7 +261,7 @@ class HumanManager:
         UsdGeom.Xformable(avatar_prim).AddOrientOp().Set(Gf.Quatf(q_inv))
 
         ref_prim = stage.DefinePrim(f"{path}/Model")
-        ref_prim.GetReferences().AddReference(_ensure_model_usd(), "/World")
+        ref_prim.GetReferences().AddReference(_model_usd_path(), "/World")
 
         armature_prim = stage.GetPrimAtPath(f"{path}/Model/Armature")
         for op in UsdGeom.Xformable(armature_prim).GetOrderedXformOps():
@@ -310,17 +312,35 @@ class HumanManager:
                 self._controller.set_position(state.agent_id, (sx, sy))
                 self._pool.teleport_agent_world_xy(i, (sx, sy))
                 state.height_z = sz
-                state.translate_op.Set(Gf.Vec3d(sx, sy, sz))
-                state.capsule_translate_op.Set(Gf.Vec3d(sx, sy, sz + state.capsule_half_height))
+                ox, oy = self._pool.agents[i].world_offset_xy
+                state.translate_op.Set(Gf.Vec3d(ox, oy, sz))
+                self._cct_iface.set_position(state.capsule_path, (sx, sy, sz + state.capsule_half_height))
+                self._cct_iface.remove_cct(state.capsule_path)
+                self._cct_iface.activate_cct(state.capsule_path)
+                self._cct_iface.disable_first_person(state.capsule_path)
+                self._cct_iface.enable_gravity(state.capsule_path)
+                self._cct_iface.set_move(state.capsule_path, (0.0, 0.0, 0.0))
             if goal is not None:
                 state.goal_xy = goal
 
-    def pre_physics_step(self, dt: float) -> None:
-        """物理ステップ実行前の更新: ORCA→ai4animationpy(歩行アニメーション+水平位置)の順に
-        進め、高さ追従用カプセルを現在位置へteleportする(水平方向の壁越え防止はORCAの
-        静的障害物が担うため、カプセル自体は物理制御しない)"""
+    def pre_physics_step(
+        self, dt: float, robot_pos_xy: tuple[float, float], robot_vel_xy: tuple[float, float]
+    ) -> None:
+        """物理ステップ実行前の更新: ロボットのagentを同期→ORCA→ai4animationpy(歩行アニメーション
+        +水平位置)の順に進め、高さ追従用カプセルを現在位置へteleportする(水平方向の壁越え防止は
+        ORCAの静的障害物が担うため、カプセル自体は物理制御しない)"""
         if self._controller is None or self._pool is None:
             return
+
+        if self._robot_agent_id is None:
+            self._robot_agent_id = self._controller.add_agent(
+                robot_pos_xy,
+                radius=self.env_cfg.robot.footprint_radius,
+                max_speed=self.env_cfg.robot.v_linear_max,
+            )
+        else:
+            self._controller.set_position(self._robot_agent_id, robot_pos_xy)
+        self._controller.set_preferred_velocity(self._robot_agent_id, robot_vel_xy)
 
         for i, state in enumerate(self._states):
             pos = np.array(self._controller.get_position(state.agent_id))
@@ -382,36 +402,16 @@ class HumanManager:
         return self._pool.ground_positions_world_xy()
 
 
-def _ensure_model_usd() -> str:
-    """Model.glb -> USD変換をキャッシュ付きで行う(assets/ai4animation/_generated/に
-    生成物を保存、.gitignore対象)Y-up->Z-up変換はここでは焼き込まない(ルートXform側で行う)"""
-    import asyncio
+def _model_usd_path() -> str:
+    """人物アバターのModel.usdパス(AVATARS_DIR配下)を返す"""
     import os
 
-    out_dir = os.path.join(os.path.dirname(MODEL_GLB), "_generated")
-    out_path = os.path.join(out_dir, "Model.usd")
-    if os.path.exists(out_path):
-        return out_path
-    os.makedirs(out_dir, exist_ok=True)
-
-    import omni.kit.app
-    import omni.kit.asset_converter as ac
-
-    async def _convert():
-        ctx = ac.AssetConverterContext()
-        ctx.use_meter_as_world_unit = True
-        ctx.embed_textures = True
-        task = ac.get_instance().create_converter_task(MODEL_GLB, out_path, None, ctx)
-        ok = await task.wait_until_finished()
-        if not ok:
-            raise RuntimeError(f"Model.glb -> USD変換に失敗: {task.get_status()} {task.get_error_message()}")
-
-    app = omni.kit.app.get_app()
-    fut = asyncio.ensure_future(_convert())
-    while not fut.done():
-        app.update()
-    if fut.exception():
-        raise fut.exception()
+    out_path = os.path.join(AVATARS_DIR, "Model.usd")
+    if not os.path.exists(out_path):
+        raise FileNotFoundError(
+            f"{out_path} が見つかりません。先に変換してください: "
+            f"uv run utils/convert_glb2usd.py --i {MODEL_GLB} --o {out_path}"
+        )
     return out_path
 
 
@@ -419,8 +419,7 @@ def _stitch_segments_to_chains(
     segments: list[tuple[tuple[float, float], tuple[float, float]]],
     tol: float = 1e-3,
 ) -> list[list[tuple[float, float]]]:
-    """端点が(誤差tol以内で)一致するセグメント同士をつなぎ合わせ、連続したポリライン/ポリゴンの
-    頂点列に復元する(_register_navmesh_boundary_obstacles参照)"""
+    """端点同士をつなぎ合わせ、連続したポリライン/ポリゴンの頂点列に復元する"""
 
     def key(p: tuple[float, float]) -> tuple[int, int]:
         return (round(p[0] / tol), round(p[1] / tol))
@@ -457,7 +456,7 @@ def _stitch_segments_to_chains(
             a, b = segments[nxt]
             tail = b if key(a) == key(tail) else a
             if key(tail) == key(chain[0]):
-                break  # 一周して閉じた(終点=始点は重複させず、閉じ辺はRVO2側で自動的に補われる)
+                break
             chain.append(tail)
 
         chains.append(chain)

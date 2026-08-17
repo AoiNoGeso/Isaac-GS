@@ -12,19 +12,19 @@ class StagePreset(BaseModel):
 
 STAGE_PRESETS: dict[str, StagePreset] = {
     "room1": StagePreset(
-        stage_path="stages/room1/stage.usda",
+        stage_path="assets/stages/room1/stage.usda",
         fixed_spawn_pos=(0.9, -0.19, -2.6),
         fixed_goal_pos=(-3.0, 1.6, -2.6),
         fixed_spawn_yaw_deg=137,
     ),
     "corridor1": StagePreset(
-        stage_path="stages/corridor1/stage.usda",
+        stage_path="assets/stages/corridor1/stage.usda",
         fixed_spawn_pos=(0.4, 1.4, -1.0),
         fixed_goal_pos=(-0.1, -1.3, -0.8),
         fixed_spawn_yaw_deg=-90,
     ),
     "corridor2": StagePreset(
-        stage_path="stages/corridor2/stage.usda",
+        stage_path="assets/stages/corridor2/stage.usda",
         fixed_spawn_pos=(0.0, -2.2, -1.5),
         fixed_goal_pos=(0.21, 6.9, -1.0),
         fixed_spawn_yaw_deg=90,

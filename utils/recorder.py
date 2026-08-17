@@ -43,13 +43,14 @@ def write_frame(writer: cv2.VideoWriter, rgb: np.ndarray) -> None:
 class EpisodeRecorder:
     """1エピソード分の動画を書き出す
 
-    俯瞰カメラを渡した場合はロボット視点と同時に2本収録し、`finish()`で両方のファイル名末尾へ
-    結果サフィックス(_s/_h/_w/_t)を付けてリネームする
+    ロボット視点は`{out_dir}/robot/`、俯瞰カメラ(渡した場合のみ)は`{out_dir}/overhead/`へ
+    それぞれ同じファイル名で保存する。`finish()`で両方のファイル名末尾へ終了理由タグ(s/h/w/t)
+    を付けてリネームする(最終的なファイル名は`{stem}_{タグ}.mp4`)
 
     使い方:
-        rec.start("ep0000", obs)   # エピソード開始時(初期観測を1フレーム目として記録)
-        rec.capture(obs)           # 毎ステップ
-        rec.finish("_s")           # エピソード終了時
+        rec.start("50000_3", obs)   # エピソード開始時(初期観測を1フレーム目として記録)
+        rec.capture(obs)            # 毎ステップ
+        rec.finish("s")             # エピソード終了時 -> robot/50000_3_s.mp4 等にリネーム
     """
 
     def __init__(
@@ -69,14 +70,17 @@ class EpisodeRecorder:
         self._overhead_path: Path | None = None
 
     def start(self, stem: str, obs: dict) -> None:
-        """`stem`.mp4 の収録を開始し、初期観測を1フレーム目として書き込む"""
-        self._dir.mkdir(parents=True, exist_ok=True)
-        self._robot_path = self._dir / f"{stem}.mp4"
+        """`robot/{stem}.mp4`(・`overhead/{stem}.mp4`)の収録を開始し、初期観測を1フレーム目として書き込む"""
+        robot_dir = self._dir / "robot"
+        robot_dir.mkdir(parents=True, exist_ok=True)
+        self._robot_path = robot_dir / f"{stem}.mp4"
         self._robot_writer = cv2.VideoWriter(
             str(self._robot_path), _FOURCC, self._fps, self._robot_resolution
         )
         if self._overhead_camera is not None:
-            self._overhead_path = self._dir / f"{stem}_overhead.mp4"
+            overhead_dir = self._dir / "overhead"
+            overhead_dir.mkdir(parents=True, exist_ok=True)
+            self._overhead_path = overhead_dir / f"{stem}.mp4"
             self._overhead_writer = cv2.VideoWriter(
                 str(self._overhead_path),
                 _FOURCC,
@@ -93,8 +97,8 @@ class EpisodeRecorder:
         if self._overhead_writer is not None:
             write_frame(self._overhead_writer, self._overhead_camera.get_rgb())
 
-    def finish(self, suffix: str) -> None:
-        """writerを閉じ、ファイル名末尾に結果サフィックスを付ける"""
+    def finish(self, tag: str) -> None:
+        """writerを閉じ、ファイル名末尾に終了理由タグを付ける(`{stem}_{タグ}.mp4`)"""
         if self._robot_writer is None:
             return
         for writer, path in (
@@ -104,6 +108,6 @@ class EpisodeRecorder:
             if writer is None:
                 continue
             writer.release()
-            path.rename(path.with_stem(path.stem + suffix))
+            path.rename(path.with_stem(f"{path.stem}_{tag}"))
         self._robot_writer = self._overhead_writer = None
         self._robot_path = self._overhead_path = None

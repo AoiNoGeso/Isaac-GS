@@ -6,7 +6,7 @@ from gymnasium import spaces
 
 from envs.config import EnvConfig, RobotConfig
 from envs.geometry import goal_vec, quat_to_yaw
-from envs.human_controller import HUMANS_ROOT, HumanManager
+from envs.human_controller import HumanManager
 
 # 落下判定
 FALL_Z_THRESHOLD = -50.0
@@ -294,7 +294,9 @@ class PointNavIsaacEnv:
         human_hit = False
         for i in range(self.env_cfg.decimation):
             if self._has_humans:
-                self._human_mgr.pre_physics_step(self.env_cfg.physics_dt)
+                pos_xy = tuple(self._get_robot_pos()[[0, 1]])
+                vel_xy = self._get_robot_velocity_xy()
+                self._human_mgr.pre_physics_step(self.env_cfg.physics_dt, pos_xy, vel_xy)
             self._world.step(render=(i == self.env_cfg.decimation - 1))
             if self._has_humans:
                 self._human_mgr.post_physics_step()
@@ -433,6 +435,17 @@ class PointNavIsaacEnv:
         _, qx, qy, _ = self._get_robot_quat()
         return float(1.0 - 2.0 * (qx * qx + qy * qy)) < self.robot_cfg.rollover_threshold
 
+    def _get_robot_velocity_xy(self) -> tuple[float, float]:
+        """ロボットの現在のワールド線形速度(XY)。人物側ORCAの選好速度同期用"""
+        try:
+            linvel = self._robot.get_linear_velocities()
+            if linvel is None:
+                return (0.0, 0.0)
+            vx, vy = _to_numpy(linvel[0])[:2]
+            return (float(vx), float(vy))
+        except Exception:
+            return (0.0, 0.0)
+
     def _check_velocity_explosion(self) -> bool:
         """物理演算が破綻して速度や位置が異常値になっていないか確認する"""
         try:
@@ -476,14 +489,11 @@ class PointNavIsaacEnv:
         )
 
     def _check_human_contact(self) -> bool:
-        """人物との接触判定。ContactSensorのボディ名一致に加え、距離ベースでも判定する"""
+        """人物との接触判定。ロボットと各人物のワールド座標間の距離ベースで判定する
+        (ai4animationpyで駆動する人物はkinematicでContactSensorだけでは検知漏れが起きるため、
+        距離ベースの判定に一本化している)"""
         if not self._has_humans:
             return False
-        if any(
-            HUMANS_ROOT in body0 or HUMANS_ROOT in body1
-            for body0, body1 in self._contact_bodies()
-        ):
-            return True
         pos = self._get_robot_pos()
         return any(
             float(np.hypot(hx - pos[0], hy - pos[1])) < self.env_cfg.human_collision_dist

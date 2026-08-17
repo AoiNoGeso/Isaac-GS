@@ -69,7 +69,7 @@ def validation(env, agent, train_cfg: TrainConfig, recorder, step: int) -> dict:
         train_cfg.val_episodes,
         recorder=recorder,
         video_episodes=train_cfg.val_video_episodes,
-        stem_fn=lambda ep: f"step{step}_ep{ep}",
+        stem_fn=lambda ep: f"{step}_{ep}",
         desc="[val]",
         leave=False,
     )
@@ -103,12 +103,14 @@ def main():
 
     recorder = None
     if train_cfg.val_video_episodes > 0:
-        # 俯瞰カメラはレンダリングが必要なためheadlessでは使えない(ロボット視点のみ収録する)
+        # ロボット搭載カメラと同じrep.create.render_product機構のため俯瞰カメラもheadlessで動作する
         recorder = EpisodeRecorder(
             out_dir=f"{train_cfg.log_dir}/val_videos",
-            fps=1.0 / env_cfg.rendering_dt,
+            # 動画1フレーム=env.step()1回(decimation物理サブステップぶんの時間経過)なので、
+            # fpsはrendering_dtではなくenv.step()の呼び出し頻度に合わせる
+            fps=1.0 / (env_cfg.physics_dt * env_cfg.decimation),
             robot_resolution=env_cfg.camera_resolution,
-            overhead_camera=None if args.headless else make_overhead_camera(get_preset(train_cfg.stage)),
+            overhead_camera=make_overhead_camera(get_preset(train_cfg.stage)),
         )
 
     obs_spec, obs_dtypes = replay_buffer_spec(model_cfg, env_cfg.camera_resolution)

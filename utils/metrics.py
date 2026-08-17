@@ -20,14 +20,14 @@ def compute_spl(success: bool, init_dist: float, path_len: float) -> float:
 
 
 def outcome_suffix(success: bool, wall_collision: bool, human_collision: bool) -> str:
-    """動画ファイル名末尾に付ける結果サフィックス(成功/人物衝突/壁衝突/タイムアウト)"""
+    """動画ファイル名に付ける終了理由タグ(成功/人物衝突/壁衝突/タイムアウト)"""
     if success:
-        return "_s"
+        return "s"
     if human_collision:
-        return "_h"
+        return "h"
     if wall_collision:
-        return "_w"
-    return "_t"
+        return "w"
+    return "t"
 
 
 class EpisodeTracker:

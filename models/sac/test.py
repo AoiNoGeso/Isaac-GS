@@ -85,10 +85,12 @@ def main():
     recorder = None
     if args.video:
         video_dir = Path(args.video_dir) / stage_name / datetime.now().strftime("%m%d%H%M%S")
-        overhead_camera = None if args.headless else make_overhead_camera(stage_cfg)
+        overhead_camera = make_overhead_camera(stage_cfg)
         recorder = EpisodeRecorder(
             out_dir=video_dir,
-            fps=1.0 / env_cfg.rendering_dt,
+            # 動画1フレーム=env.step()1回(decimation物理サブステップぶんの時間経過)なので、
+            # fpsはrendering_dtではなくenv.step()の呼び出し頻度に合わせる
+            fps=1.0 / (env_cfg.physics_dt * env_cfg.decimation),
             robot_resolution=env_cfg.camera_resolution,
             overhead_camera=overhead_camera,
         )

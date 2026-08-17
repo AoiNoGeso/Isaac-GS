@@ -36,6 +36,7 @@ class RobotConfig(BaseModel):
     v_angular_max: float = 0.5  # 最大角速度 [rad/s]
     spawn_offset: float = 0.1  # スポーン時のz方向オフセット [m]
     rollover_threshold: float = -0.7  # 転倒判定のしきい値
+    footprint_radius: float = 0.33  # 衝突回避(CrowdController)に登録する実効半径 [m](Jackal footprint 0.508x0.430mの外接円概算)
 
 
 JACKAL = RobotConfig()
@@ -81,15 +82,13 @@ class EnvConfig(BaseModel):
     # 人物キャラ (num_humans=0でPointNavigationのみ, envs/human_controller/参照)
     num_humans: int = 2
     human_controller: str = "orca"  # 衝突回避アルゴリズム。今のところ"orca"のみ実装
-    human_speed_range: tuple[float, float] = (0.8, 1.5)  # 歩行速度 [m/s]
-    # エージェント半径 [m] (CrowdControllerに渡す)。NavMesh境界は既にnavmesh_agent_radius_cm分
-    # 壁から内側にオフセットされているため、大きくしすぎると余白が二重取りになり通行不能になる。
+    human_speed_range: tuple[float, float] = (1.0, 1.5)  # 歩行速度 [m/s]
     human_radius: float = 0.2
-    human_collision_dist: float = 0.55  # ロボットとの距離ベース衝突判定しきい値 [m]
+    human_collision_dist: float = 0.50  # ロボットとの距離ベース衝突判定しきい値 [m]
     human_min_goal_dist: float = 2.0  # 人物のスポーン-ゴール間の最小距離 [m] (min_goal_distと同じ役割)
 
     # NavMesh bake
-    navmesh_agent_radius_cm: float = 50.0  # bake時のエージェント半径 [cm]
+    navmesh_agent_radius_cm: float = 40.0  # bake時のエージェント半径 [cm]
     navmesh_agent_height_cm: float = 200.0  # bake時のエージェント最小天井高 [cm]
 
     @classmethod

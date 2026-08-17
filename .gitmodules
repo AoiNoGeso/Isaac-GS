@@ -1,0 +1,3 @@
+[submodule "submodules/ai4animationpy"]
+	path = submodules/ai4animationpy
+	url = https://github.com/facebookresearch/ai4animationpy.git
