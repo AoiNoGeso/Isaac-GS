@@ -23,11 +23,9 @@ uv pip install \
 # 3. Isaac-GS 追加依存インストール
 uv pip install -e .
 
-# 4. ai4animationpy インストール（歩行アニメーション生成、docs/ai4animation-orca-plan.md参照）
+# 4. ai4animationpy インストール（歩行アニメーション生成)
 uv pip install -e "$AI4ANIM_DIR" --no-deps
-
-# pygltflib は ai4animationpy の必須依存
-uv pip install pygltflib==1.16.5
+uv pip install pygltflib==1.16.5 scikit-learn einops pyyaml raylib sounddevice soundfile pyscreenrec
 
 # 5. rvo2 (Python-RVO2) インストール（ORCAによる人物衝突回避、--num-humans使用時に必要）
 # PyPI配布が無くソースビルドが必要なため、事前にCythonをインストールしておく

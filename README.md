@@ -88,18 +88,16 @@ git clone --recursive https://github.com/AoiNoGeso/Isaac-GS.git
 cd Isaac-GS
 ```
 
-(`--recursive`を付け忘れた場合は`setup.sh`実行時に`git submodule update --init --recursive`が自動で取得します)
-
 ### 1. システム依存ライブラリ
 
 ```bash
 sudo apt install python3.12-dev libgl1-mesa-dev libx11-dev \
-    libxcursor-dev libxi-dev libxinerama-dev libxrandr-dev
+    libxcursor-dev libxi-dev libxinerama-dev libxrandr-dev libportaudio2
 ```
 
 ### 2. Python 環境のセットアップ
 
-`setup.sh` で順番にインストールします
+`setup.sh` でインストールします
 
 ```bash
 zsh setup.sh
@@ -111,7 +109,7 @@ zsh setup.sh
 1. リポジトリ直下に `.venv` (Python 3.12) 仮想環境を作成
 2. IsaacSim 6.0.1 をインストール(CUDA対応のtorch/torchvisionが同梱される)
 3. `pyproject.toml` のパッケージ (gymnasium / wandb / Pillow / pydantic / opencv-python) をインストール
-4. `submodules/ai4animationpy`(歩行モーション生成)を editable install
+4. `submodules/ai4animationpy`(歩行モーション生成)をインストール
 5. [Python-RVO2](https://github.com/sybrenstuvel/Python-RVO2.git)をCython経由でソースビルドインストール
 
 歩行モデルの重み(`Network.pt`/`PostProcessor.pt`)・アバターメッシュ(`Model.glb`)・ガイダンステンプレートは、いずれもIsaac-GS側に複製せず `submodules/ai4animationpy/Demos/` 配下を直接参照します(`envs/human_controller/locomotion.py`)
@@ -148,7 +146,7 @@ uv run python -m stage_generation compose -i assets/stages/corridor1
 
 ### 人物アバター (.glb) → .usd
 
-Social Navigationで使う人物アバターのUSDは`utils/convert_glb2usd.py`で変換します。stage本体とは独立したツールですが、同じ`omni.kit.asset_converter`ベースの変換なのでここにまとめています
+Social Navigationで使う人物アバターのUSDは`utils/convert_glb2usd.py`で変換します
 
 ```bash
 uv run utils/convert_glb2usd.py \
