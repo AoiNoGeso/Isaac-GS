@@ -24,19 +24,25 @@ CAPSULE_SLOPE_LIMIT_DEG = 45.0
 CAPSULE_STEP_OFFSET = 0.3  # 乗り越えられる段差の高さ[m]
 
 # 歩行モデル名 -> CrowdController生成関数のレジストリSocialForceModel/AVOCADO等を追加する際はここに1行足すだけでenvs/config.pyのhuman_controllerから選べる
-_CONTROLLER_REGISTRY: dict[str, Callable[[float, float], CrowdController]] = {}
+_CONTROLLER_REGISTRY: dict[str, Callable[[float, float, float], CrowdController]] = {}
 
 
-def _make_orca(max_speed: float, radius: float) -> CrowdController:
+def _make_orca(max_speed: float, radius: float, physics_dt: float) -> CrowdController:
     from envs.human_controller.controllers.orca.orca import ORCAConfig, ORCASimulator
 
-    return ORCASimulator(ORCAConfig(max_speed=max_speed, radius=radius))
+    # time_stepはstep()(=RVO2のdoStep())の実際の呼び出し周期(physics_dt、pre_physics_step()内で
+    # 毎物理サブステップ呼ばれる)に必ず一致させること。既定値(1/30)のまま放置すると、RVO2が
+    # 「1回のdoStep()で1/30秒経過した」と誤認して内部の位置・速度を実時間の2倍速で積分してしまう
+    # (physics_dt=1/60の場合)。human_anim_stride=1の頃は毎サブステップai4animationpy側の真の位置で
+    # 上書きしていたため実害が出にくかったが、stride>1にすると上書き頻度が下がりドリフトが蓄積して
+    # 歩行が破綻する形で顕在化した。
+    return ORCASimulator(ORCAConfig(max_speed=max_speed, radius=radius, time_step=physics_dt))
 
 
 _CONTROLLER_REGISTRY["orca"] = _make_orca
 
 
-def _default_controller_factory(name: str) -> Callable[[float, float], CrowdController]:
+def _default_controller_factory(name: str) -> Callable[[float, float, float], CrowdController]:
     try:
         return _CONTROLLER_REGISTRY[name]
     except KeyError:
@@ -92,6 +98,9 @@ class HumanManager:
         self._max_speed = env_cfg.human_speed_range[-1]  # 歩行の目標速度 [m/s]
         self._radius = env_cfg.human_radius
         self._robot_agent_id: Optional[int] = None  # 初回pre_physics_step()で遅延登録する
+        self._anim_stride = max(1, env_cfg.human_anim_stride)
+        self._substep_counter = 0
+        self._pool_updated_this_substep = False
 
     # ------------------------------------------------------------------
     # NavMeshサンプリング
@@ -150,7 +159,7 @@ class HumanManager:
             return
 
         max_speed, radius = self._max_speed, self._radius
-        self._controller = self._controller_factory(max_speed, radius)
+        self._controller = self._controller_factory(max_speed, radius, self.env_cfg.physics_dt)
         self._register_navmesh_boundary_obstacles()
 
         spawns_xyz = []
@@ -305,6 +314,7 @@ class HumanManager:
             return
         from pxr import Gf
 
+        self._substep_counter = 0
         for i, state in enumerate(self._states):
             spawn, goal = self._sample_spawn_and_goal_xyz()
             if spawn is not None:
@@ -328,7 +338,9 @@ class HumanManager:
     ) -> None:
         """物理ステップ実行前の更新: ロボットのagentを同期→ORCA→ai4animationpy(歩行アニメーション
         +水平位置)の順に進め、高さ追従用カプセルを現在位置へteleportする(水平方向の壁越え防止は
-        ORCAの静的障害物が担うため、カプセル自体は物理制御しない)"""
+        ORCAの静的障害物が担うため、カプセル自体は物理制御しない)。ORCA自体は軽量なため毎サブステップ
+        実行するが、重いLocomotionPool.step()(control/leg_ik/restore_bones)はhuman_anim_stride
+        サブステップに1回だけまとめて実行する(間引いた分はdtをまとめて渡す)。"""
         if self._controller is None or self._pool is None:
             return
 
@@ -366,9 +378,14 @@ class HumanManager:
 
         self._controller.step()
 
+        self._substep_counter += 1
+        self._pool_updated_this_substep = self._substep_counter % self._anim_stride == 0
+        if not self._pool_updated_this_substep:
+            return
+
         velocities = [self._controller.get_velocity(s.agent_id) for s in self._states]
         self._pool.set_velocities_world_xy(velocities)
-        self._pool.step(dt)
+        self._pool.step(dt * self._anim_stride)
 
         world_positions = self._pool.ground_positions_world_xy()
         for state, (wx, wy) in zip(self._states, world_positions):
@@ -377,9 +394,11 @@ class HumanManager:
             self._cct_iface.set_move(state.capsule_path, (0.0, 0.0, 0.0))
 
     def post_physics_step(self) -> None:
-        """物理ステップ実行後の更新: カプセルの高さ(Z)を読み戻してUSDへ反映する
-        translate_opのX,Yはスポーン時の固定値のまま変更しない(Hipsボーンのローカル移動量との
-        二重加算を防ぐため、水平位置の更新はHips側だけが担う)"""
+        """物理ステップ実行後の更新: カプセルの高さ(Z)を読み戻してUSDへ反映する(毎サブステップ、
+        PhysX側の重力解決は間引かないため)translate_opのX,Yはスポーン時の固定値のまま変更しない
+        (Hipsボーンのローカル移動量との二重加算を防ぐため、水平位置の更新はHips側だけが担う)。
+        骨格ポーズのUSD反映は、pre_physics_step()でLocomotionPool.step()が実際に進んだ
+        サブステップでのみ行う(姿勢が変化していないサブステップでの無駄な書き込みを避ける)。"""
         if self._controller is None or self._pool is None:
             return
 
@@ -390,6 +409,9 @@ class HumanManager:
             resolved = state.capsule_translate_op.Get()
             state.height_z = float(resolved[2]) - state.capsule_half_height
             state.translate_op.Set(Gf.Vec3d(cur[0], cur[1], state.height_z))
+
+        if not self._pool_updated_this_substep:
+            return
 
         all_bones = self._pool.all_bone_local_transforms()
         for state, bones in zip(self._states, all_bones):

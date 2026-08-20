@@ -195,11 +195,11 @@ class LocomotionAgent:
                 self.RootControl.Velocities[i] = Tensor.Sum(target - current, axis=0, keepDim=False) / Tensor.Sum(t, axis=0, keepDim=False)
             self.RootControl.Velocities = Vector3.Lerp(self.RootControl.Velocities, self.Sequence.Trajectory.Velocities, TRAJECTORY_CORRECTION)
 
-    def _predict(self):
+    def _predict_network_inputs(self):
+        """Networkへの入力テンソルを構築する(バッチ化のためNN呼び出し自体は含まない)。
+        戻り値は(入力テンソル(1,input_dim), 後続フェーズで使う中間コンテキスト)。"""
         api = self._api
         FeedTensor, Transform, Vector3 = api["FeedTensor"], api["Transform"], api["Vector3"]
-        ReadTensor, Tensor, Rotation = api["ReadTensor"], api["Tensor"], api["Rotation"]
-        RootModule, MotionModule, Sequence = api["RootModule"], api["MotionModule"], api["Sequence"]
 
         inputs = FeedTensor("X", self.Model.input_dim())
         root = self.Actor.Root
@@ -215,9 +215,18 @@ class LocomotionAgent:
         inputs.FeedVector3(Transform.GetAxisZ(futureRootTransforms), x=True, y=False, z=True)
         inputs.FeedVector3(futureRootVelocities, x=True, y=False, z=True)
         inputs.Feed(self.GuidanceControl.Positions)
-        outputs = self.Model(inputs.GetTensor().reshape(1, -1), iterations=NETWORK_ITERATIONS)
-        outputs = outputs.reshape(SEQUENCE_LENGTH, -1)
-        outputs = ReadTensor("Y", Tensor.ToNumPy(outputs))
+        return inputs.GetTensor().reshape(1, -1), dict(transforms=transforms, velocities=velocities, root=root)
+
+    def _predict_consume_network(self, network_output, ctx: dict):
+        """バッチ化されたNetwork出力(1エージェント分, shape=(SEQUENCE_LENGTH,-1))から
+        self.Sequenceを構築し、続くPostProcessorへの入力テンソルを返す。"""
+        api = self._api
+        Transform, Vector3, Rotation = api["Transform"], api["Vector3"], api["Rotation"]
+        ReadTensor, Tensor = api["ReadTensor"], api["Tensor"]
+        RootModule, MotionModule, Sequence, FeedTensor = api["RootModule"], api["MotionModule"], api["Sequence"], api["FeedTensor"]
+
+        transforms, velocities, root = ctx["transforms"], ctx["velocities"], ctx["root"]
+        outputs = ReadTensor("Y", Tensor.ToNumPy(network_output))
         futureRootVectors = outputs.ReadVector3()
         futureRootDelta = Tensor.ZerosLike(futureRootVectors)
         for i in range(1, SEQUENCE_LENGTH):
@@ -253,7 +262,13 @@ class LocomotionAgent:
         inputs.Feed(delta_distances)
         inputs.Feed(delta_angles)
         inputs.Feed(delta_velocities)
-        contacts = Tensor.ToNumPy(self.PostProcessor(inputs.GetTensor()).reshape(SEQUENCE_LENGTH, len(self.ContactBones)))
+        return inputs.GetTensor().reshape(1, -1)
+
+    def _predict_consume_postprocessor(self, postproc_output):
+        """バッチ化されたPostProcessor出力(1エージェント分, shape=(SEQUENCE_LENGTH,num_contacts))
+        からself.Sequence.Contactsを確定する。"""
+        Tensor = self._api["Tensor"]
+        contacts = Tensor.ToNumPy(postproc_output.reshape(SEQUENCE_LENGTH, len(self.ContactBones)))
         self.Sequence.Contacts = Tensor.Pow(Tensor.Clamp(contacts, 0, 1), CONTACT_POWER)
 
     def _animate(self):
@@ -300,16 +315,6 @@ class LocomotionAgent:
         self.Actor.SyncToScene()
         self.Previous.Timestamps -= sdt
         self.Sequence.Timestamps -= sdt
-
-    def update(self):
-        """1物理ステップ分進める(呼び出し側でAI4Animation.Update()済みであること)"""
-        self._control()
-        Time = self._api["Time"]
-        if self.Timestamp == 0.0 or Time.TotalTime - self.Timestamp > 1.0 / PREDICTION_FPS:
-            self.Timestamp = Time.TotalTime
-            self._predict()
-        if self.Sequence is not None:
-            self._animate()
 
     def bone_local_transforms(self) -> dict[str, np.ndarray]:
         """ボーン名 -> 親ボーン相対ローカル変換(4x4、列ベクトル規約)
@@ -374,10 +379,38 @@ class LocomotionPool:
         self.agents[index].teleport_world_xy(new_world_xy)
 
     def step(self, dt: float):
-        AI4Animation = self._api["AI4Animation"]
+        """1物理ステップ分進める。Network.pt/PostProcessor.ptへの推論はPREDICTION_FPS周期で
+        必要になったエージェントをまとめてバッチ呼び出しする(逐次呼び出しに比べ大幅に高速、
+        tests/batch/test_model_batch_equivalence.py、tests/batch/test_batch_motion_visual.py
+        で数値等価性・モーションの健全性を確認済み)。"""
+        import torch
+
+        AI4Animation, Time = self._api["AI4Animation"], self._api["Time"]
         AI4Animation.Update(dt)
+
         for agent in self.agents:
-            agent.update()
+            agent._control()
+
+        due = [a for a in self.agents if a.Timestamp == 0.0 or Time.TotalTime - a.Timestamp > 1.0 / PREDICTION_FPS]
+        if due:
+            for a in due:
+                a.Timestamp = Time.TotalTime
+
+            network_inputs, ctxs = zip(*(a._predict_network_inputs() for a in due))
+            network_out = due[0].Model(torch.cat(network_inputs, dim=0), iterations=NETWORK_ITERATIONS)
+            network_out = network_out.reshape(len(due), SEQUENCE_LENGTH, -1)
+
+            postproc_inputs = [
+                a._predict_consume_network(network_out[i], ctxs[i]) for i, a in enumerate(due)
+            ]
+            postproc_out = due[0].PostProcessor(torch.cat(postproc_inputs, dim=0))
+            postproc_out = postproc_out.reshape(len(due), SEQUENCE_LENGTH, len(due[0].ContactBones))
+            for i, a in enumerate(due):
+                a._predict_consume_postprocessor(postproc_out[i])
+
+        for agent in self.agents:
+            if agent.Sequence is not None:
+                agent._animate()
 
     def all_bone_local_transforms(self) -> list[dict[str, np.ndarray]]:
         return [a.bone_local_transforms() for a in self.agents]

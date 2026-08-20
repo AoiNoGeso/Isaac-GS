@@ -32,8 +32,8 @@ class TrainConfig(BaseModel):
 
     stage: str  # 学習対象ステージ名(必須)
     total_timesteps: int = 300_000
-    run_name: str | None = "S2-DINOv3+G_corridor2_0820"
-    log_dir: str = "runs/SocialNav-DINOv3+Goal/corridor2/0820"
+    run_name: str | None = "P2-DINOv3+G_corridor2_0820"
+    log_dir: str = "runs/PointNav-DINOv3+Goal/corridor2/0820"
     log_interval: int = 1_000
     checkpoint_interval: int = 50_000
     val_interval: int = 50_000  # 何stepごとにバリデーションを実行するか
