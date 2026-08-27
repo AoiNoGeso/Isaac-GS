@@ -33,12 +33,13 @@ class TrainConfig(BaseModel):
     """学習の実験設定"""
 
     stage: str  # 学習対象ステージ名(必須)
-    total_timesteps: int = 300_000
-    run_name: str | None = "S2-PGB+G_corridor2_0817"
-    log_dir: str = "runs/SocialNav-RGB+Goal/corridor2/0817"
+    total_timesteps: int = 1_500_000
+    project_name: str | None = "Isaac-GS"
+    run_name: str | None = "S1-PGB+G_corridor2_0824"
+    log_dir: str = "runs/S1-RGB+G/corridor2/0824"
     log_interval: int = 1_000
     checkpoint_interval: int = 50_000
-    val_interval: int = 50_000  # 何stepごとにバリデーションを実行するか
+    val_interval: int = 100_000  # 何stepごとにバリデーションを実行するか
     val_episodes: int = 10 # バリデーション1回あたりのエピソード数10
     val_video_episodes: int = 10  # バリデーション毎に動画を撮るエピソード数(0で無効)
 

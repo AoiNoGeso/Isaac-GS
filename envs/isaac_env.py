@@ -282,7 +282,7 @@ class PointNavIsaacEnv:
         self._world.step(render=True)
 
         if self._has_humans:
-            self._human_mgr.reset_humans()
+            self._human_mgr.reset_humans(robot_pos_xy=(float(robot_pos[0]), float(robot_pos[1])))
 
         return self._get_obs()
 

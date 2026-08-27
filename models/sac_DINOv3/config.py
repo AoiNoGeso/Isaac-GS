@@ -31,17 +31,18 @@ class TrainConfig(BaseModel):
     """学習の実験設定"""
 
     stage: str  # 学習対象ステージ名(必須)
-    total_timesteps: int = 300_000
-    run_name: str | None = "P2-DINOv3+G_corridor2_0820"
-    log_dir: str = "runs/PointNav-DINOv3+Goal/corridor2/0820"
+    total_timesteps: int = 1_500_000
+    project_name: str | None = "Isaac-GS"
+    run_name: str | None = "S1-PGB+G_corridor2_0827_buff100k"
+    log_dir: str = "runs_forSI/corridor2/S1-RGB+G/0827_buff100k"
     log_interval: int = 1_000
-    checkpoint_interval: int = 50_000
+    checkpoint_interval: int = 100_000
     val_interval: int = 50_000  # 何stepごとにバリデーションを実行するか
     val_episodes: int = 10 # バリデーション1回あたりのエピソード数10
     val_video_episodes: int = 10  # バリデーション毎に動画を撮るエピソード数(0で無効)
 
     # SACハイパーパラメータ
-    buffer_size: int = 30_000
+    buffer_size: int = 100_000
     batch_size: int = 256
     gamma: float = 0.99
     tau: float = 0.005  # ターゲットネットワークの更新率

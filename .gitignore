@@ -18,5 +18,5 @@ assets/avatars/*
 
 docs/
 wandb/
-runs/
+runs*/
 tests/

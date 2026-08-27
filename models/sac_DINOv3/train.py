@@ -91,7 +91,7 @@ def main():
     use_wandb = not args.no_wandb
     if use_wandb:
         wandb.init(
-            project="Isaac-GS_PointNav",
+            project=train_cfg.project_name,
             name=train_cfg.run_name,
             config={
                 "total_timesteps": train_cfg.total_timesteps,

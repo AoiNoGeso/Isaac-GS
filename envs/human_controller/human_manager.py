@@ -149,6 +149,24 @@ class HumanManager:
         goal = self._sample_goal_min_dist_xy((spawn[0], spawn[1]), attempts=attempts)
         return spawn, goal
 
+    def _sample_spawn_min_dist_from_xyz(
+        self, ref_xy: tuple[float, float], min_dist: float, attempts: int = 10
+    ) -> Optional[tuple[float, float, float]]:
+        """`ref_xy`(ロボットのスポーン位置)から`min_dist`以上離れたNavMesh上の点を
+        (高さ込みで)探す(既定回数試行し、満たせなければ一番遠かった点で妥協する)。
+        1step目でロボットと人物が至近距離でスポーンし即座にhuman_collisionになる事故を防ぐ"""
+        best_point, best_dist = None, -1.0
+        for _ in range(attempts):
+            point = self._sample_navmesh_point_xyz()
+            if point is None:
+                continue
+            dist = float(np.hypot(point[0] - ref_xy[0], point[1] - ref_xy[1]))
+            if dist > best_dist:
+                best_point, best_dist = point, dist
+            if dist >= min_dist:
+                break
+        return best_point
+
     # ------------------------------------------------------------------
     # セットアップ
     # ------------------------------------------------------------------
@@ -307,16 +325,24 @@ class HumanManager:
     # ------------------------------------------------------------------
     # reset / step
     # ------------------------------------------------------------------
-    def reset_humans(self) -> None:
+    def reset_humans(self, robot_pos_xy: tuple[float, float] | None = None) -> None:
         """各人物の位置・ゴールをNavMesh上の新しいランダム点へ再サンプリングし、
-        アバターの描画位置(x,y,z)も瞬間移動させる(prim自体は作り直さない)"""
+        アバターの描画位置(x,y,z)も瞬間移動させる(prim自体は作り直さない)
+        `robot_pos_xy`を渡すと、そこから`human_robot_min_spawn_dist`以上離れた位置に
+        スポーンさせる(1step目での至近距離スポーンによるhuman_collisionを防ぐ)"""
         if self._controller is None:
             return
         from pxr import Gf
 
         self._substep_counter = 0
         for i, state in enumerate(self._states):
-            spawn, goal = self._sample_spawn_and_goal_xyz()
+            if robot_pos_xy is not None:
+                spawn = self._sample_spawn_min_dist_from_xyz(
+                    robot_pos_xy, self.env_cfg.human_robot_min_spawn_dist
+                )
+                goal = self._sample_goal_min_dist_xy((spawn[0], spawn[1])) if spawn is not None else None
+            else:
+                spawn, goal = self._sample_spawn_and_goal_xyz()
             if spawn is not None:
                 sx, sy, sz = spawn
                 self._controller.set_position(state.agent_id, (sx, sy))

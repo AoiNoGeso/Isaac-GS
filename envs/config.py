@@ -80,12 +80,13 @@ class EnvConfig(BaseModel):
     fixed_spawn_yaw_deg: float | None = None
 
     # 人物キャラ (num_humans=0でPointNavigationのみ, envs/human_controller/参照)
-    num_humans: int = 0
+    num_humans: int = 1
     human_controller: str = "orca"  # 衝突回避アルゴリズム。今のところ"orca"のみ実装
     human_speed_range: tuple[float, float] = (1.0, 1.5)  # 歩行速度 [m/s]
     human_radius: float = 0.2
-    human_collision_dist: float = 0.50  # ロボットとの距離ベース衝突判定しきい値 [m]
+    human_collision_dist: float = 0.4  # ロボットとの距離ベース衝突判定しきい値 [m]
     human_min_goal_dist: float = 2.0  # 人物のスポーン-ゴール間の最小距離 [m] (min_goal_distと同じ役割)
+    human_robot_min_spawn_dist: float = 1.0  # 人物スポーン位置とロボットスポーン位置の最小距離 [m] (1step目での衝突判定を防ぐ)
     human_anim_stride: int = 3  # ai4animationpyの姿勢更新(LocomotionPool.step())を何物理サブステップに1回行うか
 
     # NavMesh bake
