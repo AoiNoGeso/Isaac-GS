@@ -33,8 +33,8 @@ class TrainConfig(BaseModel):
     stage: str  # 学習対象ステージ名(必須)
     total_timesteps: int = 1_500_000
     project_name: str | None = "Isaac-GS"
-    run_name: str | None = "S1-PGB+G_corridor2_0827_buff100k"
-    log_dir: str = "runs_forSI/corridor2/S1-RGB+G/0827_buff100k"
+    run_name: str | None = "S2-PGB+G_corridor2_0827_buff30k"
+    log_dir: str = "runs_forSI/corridor2/S2-RGB+G/0827_buff30k"
     log_interval: int = 1_000
     checkpoint_interval: int = 100_000
     val_interval: int = 50_000  # 何stepごとにバリデーションを実行するか
@@ -42,11 +42,11 @@ class TrainConfig(BaseModel):
     val_video_episodes: int = 10  # バリデーション毎に動画を撮るエピソード数(0で無効)
 
     # SACハイパーパラメータ
-    buffer_size: int = 100_000
+    buffer_size: int = 30_000
     batch_size: int = 256
     gamma: float = 0.99
     tau: float = 0.005  # ターゲットネットワークの更新率
-    learning_rate: float = 3e-4
+    learning_rate: float = 3e-45
     learning_starts: int = 3_000
     train_freq: int = 1  # 何stepごとに更新するか
     gradient_steps: int = 1  # 1回の更新あたりの勾配ステップ数
