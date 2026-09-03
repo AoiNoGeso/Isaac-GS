@@ -190,12 +190,16 @@ uv run scripts/train.py --model sac_DINOv3 --headless
 
 ```bash
 # 単一ステージ(index 0)
-uv run models/sac/test.py \
-    --model runs/SocialNav-RGB+Goal/corridor2/sac_final.pt \
+uv run scripts/test.py --model sac \
+    --checkpoint runs/SocialNav-RGB+Goal/corridor2/sac_final.pt \
+    --log-dir runs/SocialNav-RGB+Goal/corridor2/test \
     --stage-index 0
 
 # 各エピソードの映像を保存(俯瞰カメラも設定されていれば同時保存)
-uv run models/sac/test.py --model <path> --stage-index 2 --video
+uv run scripts/test.py --model sac --checkpoint <path> --log-dir <dir> --stage-index 2 --video
+
+# チェックポイントディレクトリを丸ごと掃引(DINOv3視覚エンコーダ版)
+uv run scripts/test.py --model sac_DINOv3 --checkpoint <dir> --log-dir <dir> --headless
 ```
 
 | 引数 | 説明 |
