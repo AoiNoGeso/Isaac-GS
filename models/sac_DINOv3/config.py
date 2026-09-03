@@ -46,7 +46,7 @@ class TrainConfig(BaseModel):
     batch_size: int = 256
     gamma: float = 0.99
     tau: float = 0.005  # ターゲットネットワークの更新率
-    learning_rate: float = 3e-45
+    learning_rate: float = 3e-4
     learning_starts: int = 3_000
     train_freq: int = 1  # 何stepごとに更新するか
     gradient_steps: int = 1  # 1回の更新あたりの勾配ステップ数
