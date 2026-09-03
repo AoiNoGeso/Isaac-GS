@@ -31,7 +31,7 @@ class TrainConfig(BaseModel):
 
     stage: str  # 学習対象ステージ名(必須)
     total_timesteps: int = 1_500_000
-    project_name: str | None = "Isaac-GS"
+    project_name: str | None = "Isaac-GS_PointNav"
     run_name: str | None = "S1-PGB+G_corridor2_0824"
     log_dir: str = "runs/S1-RGB+G/corridor2/0824"
     log_interval: int = 1_000

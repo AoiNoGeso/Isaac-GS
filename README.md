@@ -15,7 +15,7 @@ stage_generation convert-mesh   →  wall_mesh.usd  (物理: 壁コライダ)
         ↓
 stage_generation compose        →  stage.usda  (CollisionAPI + NavMeshVolume)
         ↓
-RL 学習 (models/sac/train.py)  ← 起動時に NavMesh をランタイム bake
+RL 学習 (scripts/train.py)  ← 起動時に NavMesh をランタイム bake
 ```
 
 生成される `stage.usda` は 3DGS を視覚表現とし，床・壁メッシュを不可視コライダとして重ねることで，リアルな見た目と正確な物理コリジョンを両立します
@@ -166,17 +166,20 @@ uv run utils/convert_glb2usd.py \
 
 ```bash
 # 学習開始
-uv run models/sac/train.py
+uv run scripts/train.py --model sac --headless
 
 # 人物キャラの数を指定(Social Navigation)
-uv run models/sac/train.py --num-humans 2
+uv run scripts/train.py --model sac --headless --num-humans 2
 
 # チェックポイントから再開
-uv run models/sac/train.py \
+uv run scripts/train.py --model sac --headless \
     --checkpoint runs/SocialNav-RGB+Goal/corridor2/checkpoints/sac_10000.pt
 
 # wandb なし
-uv run models/sac/train.py --no-wandb
+uv run scripts/train.py --model sac --headless --no-wandb
+
+# DINOv3視覚エンコーダ版
+uv run scripts/train.py --model sac_DINOv3 --headless
 ```
 
 学習中は `TrainConfig.val_interval` ごとにgreedy方策でのバリデーションを実行し、成功率/衝突率/タイムアウト率をログします。`val_video_episodes`を設定すると、先頭N件のバリデーションエピソードの動画をheadlessでも `{log_dir}/val_videos/robot/`(ロボット視点)・`{log_dir}/val_videos/overhead/`(俯瞰視点、ステージに`overhead_camera_translation`が設定されている場合のみ)にローカル保存します(wandbへは送信しません)。ファイル名は `{step}_{episode}_{終了理由タグ}.mp4`(タグは成功=`s`／人物衝突=`h`／壁衝突=`w`／タイムアウト=`t`)です

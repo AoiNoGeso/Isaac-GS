@@ -21,7 +21,7 @@ _STD = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
 
 class DINOBackbone:
     """完全凍結のDINOv3バックボーン。ReplayBufferへ保存する特徴量を収集時に1回だけ計算する用途
-    (models/sac_DINOv3/train.py・test.pyのrollout層で1インスタンスだけ生成して使い回す)"""
+    (scripts/train.py・test.pyのrollout層で1インスタンスだけ生成して使い回す)"""
 
     def __init__(self, device: str):
         from transformers import AutoModel
