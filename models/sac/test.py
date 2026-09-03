@@ -37,7 +37,7 @@ _OUT = sys.stdout
 from envs import PointNavGymEnv
 from envs.config import EnvConfig, get_preset, stage_names
 from models.sac.config import TestConfig, TrainConfig
-from models.sac.network import make_encoder, model_observation_space
+from models.sac.network import build_obs_pipeline, make_encoder
 from models.sac.policy import SACAgent
 from utils.recorder import EpisodeRecorder, make_overhead_camera
 from utils.rollout import evaluate
@@ -72,7 +72,7 @@ def main():
     env = PointNavGymEnv(env_cfg=env_cfg)
     env.reset()  # 俯瞰カメラ生成にはステージのロードが済んでいる必要がある
     action_dim = env.action_space.shape[0]
-    model_obs_space = model_observation_space(env.observation_space)
+    model_obs_space, obs_transform = build_obs_pipeline(env.observation_space, DEVICE)
 
     agent = SACAgent(
         encoder_factory=lambda: make_encoder(model_obs_space),
@@ -104,6 +104,7 @@ def main():
         test_cfg.episodes_per_stage,
         recorder=recorder,
         video_episodes=test_cfg.episodes_per_stage if args.video else 0,
+        obs_transform=obs_transform,
     )
 
     separator = "=" * 60

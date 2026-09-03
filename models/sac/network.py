@@ -65,9 +65,9 @@ class PointNavEncoder(nn.Module):
         return torch.cat(parts, dim=-1)
 
 
-def model_observation_space(env_obs_space: spaces.Dict) -> spaces.Dict:
-    """envの観測空間からこのモデルが消費する空間へ変換する(sacでは恒等)"""
-    return env_obs_space
+def build_obs_pipeline(env_obs_space: spaces.Dict, device: str) -> tuple[spaces.Dict, None]:
+    """モデルが消費する観測空間と、env観測の変換関数(sacでは不要のためNone)を返す"""
+    return env_obs_space, None
 
 
 def make_encoder(observation_space: spaces.Dict) -> PointNavEncoder:

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import numpy as np
 import torch
-from gymnasium import spaces
 
 from models.sac_DINOv3.config import DINO_IMAGE_SIZE
 
@@ -62,39 +61,12 @@ class DINOBackbone:
         return patch_grid[0].cpu().numpy()
 
 
-class DINOEnvWrapper:
-    """envのreset()/step()が返すobsへ`dino_feat`(DINOv3パッチグリッド特徴)を追加するラッパー。
-    obs["rgb"]はそのまま残すので、EpisodeRecorder等の動画記録・ログには影響しない。
-    utils/rollout.py・utils/recorder.py等の共用コードは無変更で使えるよう、DINO固有の処理は
-    ここに閉じ込めてある"""
+_BACKBONE: DINOBackbone | None = None
 
-    def __init__(self, env, backbone: DINOBackbone):
-        self._env = env
-        self._backbone = backbone
-        self.action_space = env.action_space
-        # Phase Bでラッパーごと削除する暫定措置
-        dino_feat_space = spaces.Box(
-            low=-np.inf,
-            high=np.inf,
-            shape=(backbone.hidden_size, backbone.grid_size, backbone.grid_size),
-            dtype=np.float32,
-        )
-        self.observation_space = spaces.Dict(
-            {**env.observation_space.spaces, "dino_feat": dino_feat_space}
-        )
 
-    def _augment(self, obs: dict) -> dict:
-        obs = dict(obs)
-        obs["dino_feat"] = self._backbone.extract(obs["rgb"])
-        return obs
-
-    def reset(self, **kwargs):
-        obs, info = self._env.reset(**kwargs)
-        return self._augment(obs), info
-
-    def step(self, action):
-        obs, reward, terminated, truncated, info = self._env.step(action)
-        return self._augment(obs), reward, terminated, truncated, info
-
-    def close(self):
-        self._env.close()
+def get_backbone(device: str = "cuda") -> DINOBackbone:
+    """プロセス内で唯一のDINOv3インスタンスを返す(train/evalで二重ロードしないため)"""
+    global _BACKBONE
+    if _BACKBONE is None:
+        _BACKBONE = DINOBackbone(device)
+    return _BACKBONE

@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 from gymnasium import spaces
 
+from models.sac_DINOv3.transforms import DINOTransform
+
 _KEY_ORDER = ("dino_feat", "goal")  # 特徴量の連結順。既存チェックポイントとの整合のため変更禁止
 
 
@@ -65,10 +67,10 @@ class PointNavEncoder(nn.Module):
         return torch.cat(parts, dim=-1)
 
 
-def model_observation_space(env_obs_space: spaces.Dict) -> spaces.Dict:
-    """envの観測空間からこのモデルが消費する空間へ変換する
-    (rgbはdino_featへ抽出済みのため、エンコーダにもReplayBufferにも渡さない)"""
-    return spaces.Dict({k: v for k, v in env_obs_space.spaces.items() if k != "rgb"})
+def build_obs_pipeline(env_obs_space: spaces.Dict, device: str) -> tuple[spaces.Dict, DINOTransform]:
+    """モデルが消費する観測空間と、rgbをdino_featへ変換するDINOTransformを返す"""
+    transform = DINOTransform(device)
+    return transform.transform_observation_space(env_obs_space), transform
 
 
 def make_encoder(observation_space: spaces.Dict) -> PointNavEncoder:

@@ -39,7 +39,7 @@ _OUT = sys.stdout
 from envs import PointNavGymEnv
 from envs.config import EnvConfig, get_preset
 from models.sac.config import replay_buffer_spec
-from models.sac.network import make_encoder, model_observation_space
+from models.sac.network import build_obs_pipeline, make_encoder
 from models.sac.policy import ReplayBuffer, SACAgent
 from utils.metrics import EpisodeTracker
 from utils.recorder import EpisodeRecorder, make_overhead_camera
@@ -61,7 +61,7 @@ _LOGGED_SAC_KEYS = (
 )
 
 
-def validation(env, agent, train_cfg: TrainConfig, recorder, step: int) -> dict:
+def validation(env, agent, train_cfg: TrainConfig, recorder, step: int, obs_transform) -> dict:
     """greedy方策で評価し成功率・衝突率・タイムアウト率をwandbログ用の辞書で返す"""
     stats = evaluate(
         env,
@@ -72,6 +72,7 @@ def validation(env, agent, train_cfg: TrainConfig, recorder, step: int) -> dict:
         stem_fn=lambda ep: f"{step}_{ep}",
         desc="[val]",
         leave=False,
+        obs_transform=obs_transform,
     )
     return stats.rates("val/")
 
@@ -84,7 +85,7 @@ def main():
 
     # observation_spaceは__init__で確定するため、重いreset()を待たずに参照できる
     env = PointNavGymEnv(env_cfg=env_cfg)
-    model_obs_space = model_observation_space(env.observation_space)
+    model_obs_space, obs_transform = build_obs_pipeline(env.observation_space, DEVICE)
 
     use_wandb = not args.no_wandb
     if use_wandb:
@@ -154,6 +155,7 @@ def main():
         recorder=recorder,
         use_wandb=use_wandb,
         ckpt_dir=ckpt_dir,
+        obs_transform=obs_transform,
     )
 
     if use_wandb:
@@ -171,22 +173,28 @@ def train(
     recorder: EpisodeRecorder | None,
     use_wandb: bool,
     ckpt_dir: str,
+    obs_transform,
 ) -> None:
-    """学習ループ本体。ロールアウト・SAC更新・定期バリデーション・チェックポイント保存を行う"""
+    """学習ループ本体。ロールアウト・SAC更新・定期バリデーション・チェックポイント保存を行う
+
+    env観測とモデル観測を別々に保持する(sacではobs_transformがNoneのため実質恒等)"""
     metrics: dict = {}
+    env_obs = obs
+    model_obs = obs_transform(env_obs) if obs_transform else env_obs
     pbar = tqdm(range(1, train_cfg.total_timesteps + 1), dynamic_ncols=True, file=_OUT)
     for step in pbar:
         if len(buffer) < train_cfg.learning_starts:
             action = env.action_space.sample()
         else:
-            action = agent.act(obs, deterministic=False)
+            action = agent.act(model_obs, deterministic=False)
 
-        next_obs, reward, terminated, truncated, info = env.step(action)
+        next_env_obs, reward, terminated, truncated, info = env.step(action)
+        next_model_obs = obs_transform(next_env_obs) if obs_transform else next_env_obs
 
         # タイムアウトによる終了はdone=0として扱う
-        buffer.add(obs, action, reward, next_obs, float(terminated))
+        buffer.add(model_obs, action, reward, next_model_obs, float(terminated))
         tracker.step(reward, info)
-        obs = next_obs
+        env_obs, model_obs = next_env_obs, next_model_obs
 
         if terminated or truncated:
             ep_metrics = tracker.finish(info)
@@ -201,16 +209,18 @@ def train(
             )
             if use_wandb:
                 wandb.log(ep_metrics, step=step)
-            obs, reset_info = env.reset()
-            tracker.reset(obs, reset_info)
+            env_obs, reset_info = env.reset()
+            model_obs = obs_transform(env_obs) if obs_transform else env_obs
+            tracker.reset(env_obs, reset_info)
 
         if step % train_cfg.val_interval == 0:
-            val_metrics = validation(env, agent, train_cfg, recorder, step)
+            val_metrics = validation(env, agent, train_cfg, recorder, step, obs_transform)
             tqdm.write(f"[val] step={step} {val_metrics}", file=_OUT)
             if use_wandb:
                 wandb.log(val_metrics, step=step)
-            obs, reset_info = env.reset()
-            tracker.reset(obs, reset_info)
+            env_obs, reset_info = env.reset()
+            model_obs = obs_transform(env_obs) if obs_transform else env_obs
+            tracker.reset(env_obs, reset_info)
 
         if len(buffer) >= train_cfg.learning_starts and step % train_cfg.train_freq == 0:
             metrics = agent.update(buffer)

@@ -58,8 +58,8 @@ _OUT = sys.stdout
 from envs import PointNavGymEnv
 from envs.config import EnvConfig, get_preset, stage_names
 from models.sac_DINOv3.config import TestConfig, TrainConfig
-from models.sac_DINOv3.dino_backbone import DINOBackbone, DINOEnvWrapper
-from models.sac_DINOv3.network import make_encoder, model_observation_space
+from models.sac_DINOv3.dino_backbone import get_backbone
+from models.sac_DINOv3.network import build_obs_pipeline, make_encoder
 from models.sac_DINOv3.policy import SACAgent
 from utils.recorder import EpisodeRecorder, make_overhead_camera
 from utils.rollout import evaluate
@@ -133,7 +133,7 @@ def main():
             dir=str(log_dir),
         )
 
-    backbone = DINOBackbone(device=DEVICE)
+    backbone = get_backbone(DEVICE)
     # DINOv3の学習解像度(224x224)にIsaacSim側のレンダリング解像度を合わせる
     env_cfg = EnvConfig.from_preset(
         stage_name,
@@ -142,8 +142,8 @@ def main():
         camera_resolution=(backbone.image_size, backbone.image_size),
     )
 
-    env = DINOEnvWrapper(PointNavGymEnv(env_cfg=env_cfg), backbone)
-    model_obs_space = model_observation_space(env.observation_space)
+    env = PointNavGymEnv(env_cfg=env_cfg)
+    model_obs_space, obs_transform = build_obs_pipeline(env.observation_space, DEVICE)
     env.reset()  # 俯瞰カメラ生成にはステージのロードが済んでいる必要がある
     action_dim = env.action_space.shape[0]
 
@@ -187,6 +187,7 @@ def main():
                 video_episodes=test_cfg.episodes_per_stage if args.video else 0,
                 stem_fn=lambda ep: f"{ep}",
                 desc=f"[{ckpt_path.stem}]",
+                obs_transform=obs_transform,
             )
 
             separator = "=" * 60

@@ -183,7 +183,7 @@ def main():
     from gymnasium import spaces
 
     from models.sac.config import TrainConfig
-    from models.sac.network import make_encoder, model_observation_space
+    from models.sac.network import build_obs_pipeline, make_encoder
 
     input_goal = args.input_goal
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -196,7 +196,7 @@ def main():
             high=np.array([np.inf, 1.0], dtype=np.float32),
             dtype=np.float32,
         )
-    model_obs_space = model_observation_space(spaces.Dict(obs_space_dict))
+    model_obs_space, _ = build_obs_pipeline(spaces.Dict(obs_space_dict), device)
 
     model = SACAgent(
         encoder_factory=lambda: make_encoder(model_obs_space),
