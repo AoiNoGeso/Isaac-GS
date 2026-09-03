@@ -38,9 +38,9 @@ _OUT = sys.stdout
 
 from envs import PointNavGymEnv
 from envs.config import EnvConfig, get_preset
-from models.sac_DINOv3.config import ModelConfig, replay_buffer_spec
+from models.sac_DINOv3.config import replay_buffer_spec
 from models.sac_DINOv3.dino_backbone import DINOBackbone, DINOEnvWrapper
-from models.sac_DINOv3.network import make_encoder
+from models.sac_DINOv3.network import make_encoder, model_observation_space
 from models.sac_DINOv3.policy import ReplayBuffer, SACAgent
 from utils.metrics import EpisodeTracker
 from utils.recorder import EpisodeRecorder, make_overhead_camera
@@ -79,7 +79,6 @@ def validation(env, agent, train_cfg: TrainConfig, recorder, step: int) -> dict:
 
 def main():
     """環境・エージェント・リプレイバッファを構築し、train()に処理を渡す"""
-    model_cfg = ModelConfig()
     backbone = DINOBackbone(device=DEVICE)
     # DINOv3の学習解像度(224x224)にIsaacSim側のレンダリング解像度を合わせる
     env_cfg = EnvConfig.from_preset(
@@ -88,6 +87,9 @@ def main():
     if args.num_humans is not None:
         env_cfg.num_humans = args.num_humans
 
+    env = DINOEnvWrapper(PointNavGymEnv(env_cfg=env_cfg), backbone)
+    model_obs_space = model_observation_space(env.observation_space)
+
     use_wandb = not args.no_wandb
     if use_wandb:
         wandb.init(
@@ -95,15 +97,13 @@ def main():
             name=train_cfg.run_name,
             config={
                 "total_timesteps": train_cfg.total_timesteps,
-                "input_rgb": model_cfg.input_rgb,
-                "input_goal": model_cfg.input_goal,
+                "obs_keys": list(model_obs_space.spaces),
                 "num_humans": env_cfg.num_humans,
                 **{f"sac/{k}": getattr(train_cfg, k) for k in _LOGGED_SAC_KEYS},
             },
             dir=train_cfg.log_dir,
         )
 
-    env = DINOEnvWrapper(PointNavGymEnv(env_cfg=env_cfg), backbone)
     obs, reset_info = env.reset()
 
     recorder = None
@@ -118,7 +118,7 @@ def main():
             overhead_camera=make_overhead_camera(get_preset(train_cfg.stage)),
         )
 
-    obs_spec, obs_dtypes = replay_buffer_spec(model_cfg, backbone.hidden_size, backbone.grid_size)
+    obs_spec, obs_dtypes = replay_buffer_spec(model_obs_space)
     action_dim = env.action_space.shape[0]
 
     buffer = ReplayBuffer(
@@ -130,7 +130,7 @@ def main():
     )
 
     agent = SACAgent(
-        encoder_factory=lambda: make_encoder(model_cfg, backbone.hidden_size, backbone.grid_size),
+        encoder_factory=lambda: make_encoder(model_obs_space),
         action_dim=action_dim,
         cfg=train_cfg,
         device=DEVICE,
@@ -145,8 +145,8 @@ def main():
     tracker.reset(obs, reset_info)
 
     print(
-        f"[train] modality=(rgb={model_cfg.input_rgb}, goal={model_cfg.input_goal}, "
-        f"humans={env_cfg.num_humans})  device={DEVICE}  total={train_cfg.total_timesteps:,}"
+        f"[train] obs_keys={list(model_obs_space.spaces)}  humans={env_cfg.num_humans}  "
+        f"device={DEVICE}  total={train_cfg.total_timesteps:,}"
     )
 
     train(

@@ -180,16 +180,26 @@ def main():
     args = _parse_args()
 
     import torch
+    from gymnasium import spaces
 
-    from models.sac.config import ModelConfig, TrainConfig
-    from models.sac.network import make_encoder
+    from models.sac.config import TrainConfig
+    from models.sac.network import make_encoder, model_observation_space
 
     input_goal = args.input_goal
-    model_cfg = ModelConfig(input_goal=input_goal)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
+    # 学習時の観測空間を再現してエンコーダ構成を決める(goalの角度はgoal_vec()でπ正規化済み)
+    obs_space_dict = {"rgb": spaces.Box(0.0, 1.0, (3, _IMG_SIZE, _IMG_SIZE), dtype=np.float32)}
+    if input_goal:
+        obs_space_dict["goal"] = spaces.Box(
+            low=np.array([0.0, -1.0], dtype=np.float32),
+            high=np.array([np.inf, 1.0], dtype=np.float32),
+            dtype=np.float32,
+        )
+    model_obs_space = model_observation_space(spaces.Dict(obs_space_dict))
+
     model = SACAgent(
-        encoder_factory=lambda: make_encoder(model_cfg, img_size=_IMG_SIZE),
+        encoder_factory=lambda: make_encoder(model_obs_space),
         action_dim=2,
         cfg=TrainConfig(stage="unused"),  # 実機デプロイではstage(シミュレータ用ステージ名)は使わない
         device=device,

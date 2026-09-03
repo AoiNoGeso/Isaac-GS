@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
+from gymnasium import spaces
 
-from models.sac_DINOv3.config import ModelConfig
+_KEY_ORDER = ("dino_feat", "goal")  # 特徴量の連結順。既存チェックポイントとの整合のため変更禁止
 
 
 class DINOHead(nn.Module):
@@ -30,9 +31,9 @@ class DINOHead(nn.Module):
 class GoalEncoder(nn.Module):
     """ゴールベクトル[距離, 相対角度]を特徴ベクトルに変換する"""
 
-    def __init__(self):
+    def __init__(self, in_dim: int = 2):
         super().__init__()
-        self.fc = nn.Sequential(nn.Linear(2, 32), nn.ELU())
+        self.fc = nn.Sequential(nn.Linear(in_dim, 32), nn.ELU())
         self.out_dim = 32
 
     def forward(self, g: torch.Tensor) -> torch.Tensor:
@@ -40,40 +41,36 @@ class GoalEncoder(nn.Module):
 
 
 class PointNavEncoder(nn.Module):
-    """DINOHeadとGoalEncoderを設定に応じて組み合わせる統合エンコーダ"""
+    """DINOHeadとGoalEncoderを観測空間に応じて組み合わせる統合エンコーダ"""
 
-    def __init__(
-        self,
-        input_rgb: bool = True,
-        input_goal: bool = True,
-        hidden_size: int = 384,
-        grid_size: int = 14,
-    ):
+    def __init__(self, observation_space: spaces.Dict):
         super().__init__()
-        self.input_rgb = input_rgb
-        self.input_goal = input_goal
+        self.keys = tuple(k for k in _KEY_ORDER if k in observation_space.spaces)
         self.out_dim = 0
-        if input_rgb:
-            self.dino_head = DINOHead(hidden_size, grid_size)
+        if "dino_feat" in self.keys:
+            hidden_size, grid_h, grid_w = observation_space["dino_feat"].shape
+            assert grid_h == grid_w, f"DINOHeadは正方形グリッドのみ対応: {(grid_h, grid_w)}"
+            self.dino_head = DINOHead(hidden_size, grid_h)
             self.out_dim += self.dino_head.out_dim
-        if input_goal:
-            self.goal_enc = GoalEncoder()
+        if "goal" in self.keys:
+            self.goal_enc = GoalEncoder(in_dim=observation_space["goal"].shape[0])
             self.out_dim += self.goal_enc.out_dim
 
     def forward(self, obs: dict) -> torch.Tensor:
         parts = []
-        if self.input_rgb:
+        if "dino_feat" in self.keys:
             parts.append(self.dino_head(obs["dino_feat"]))
-        if self.input_goal:
+        if "goal" in self.keys:
             parts.append(self.goal_enc(obs["goal"]))
         return torch.cat(parts, dim=-1)
 
 
-def make_encoder(model_cfg: ModelConfig, hidden_size: int, grid_size: int) -> PointNavEncoder:
-    """train/test/deployで共通のエンコーダ生成関数。hidden_size/grid_sizeはDINOBackboneから渡す"""
-    return PointNavEncoder(
-        input_rgb=model_cfg.input_rgb,
-        input_goal=model_cfg.input_goal,
-        hidden_size=hidden_size,
-        grid_size=grid_size,
-    )
+def model_observation_space(env_obs_space: spaces.Dict) -> spaces.Dict:
+    """envの観測空間からこのモデルが消費する空間へ変換する
+    (rgbはdino_featへ抽出済みのため、エンコーダにもReplayBufferにも渡さない)"""
+    return spaces.Dict({k: v for k, v in env_obs_space.spaces.items() if k != "rgb"})
+
+
+def make_encoder(observation_space: spaces.Dict) -> PointNavEncoder:
+    """train/test/deployで共通のエンコーダ生成関数"""
+    return PointNavEncoder(observation_space)

@@ -57,26 +57,31 @@ class EpisodeRecorder:
         self,
         out_dir: str | Path,
         fps: float,
-        robot_resolution: tuple[int, int],
+        robot_resolution: tuple[int, int] | None,
         overhead_camera=None,
+        rgb_key: str = "rgb",
     ):
         self._dir = Path(out_dir)
         self._fps = fps
-        self._robot_resolution = tuple(robot_resolution)  # (W, H)
+        self._robot_resolution = tuple(robot_resolution) if robot_resolution is not None else None
         self._overhead_camera = overhead_camera
+        self._rgb_key = rgb_key
         self._robot_writer: cv2.VideoWriter | None = None
         self._overhead_writer: cv2.VideoWriter | None = None
         self._robot_path: Path | None = None
         self._overhead_path: Path | None = None
+        self._recording = False
 
     def start(self, stem: str, obs: dict) -> None:
-        """`robot/{stem}.mp4`(・`overhead/{stem}.mp4`)の収録を開始し、初期観測を1フレーム目として書き込む"""
-        robot_dir = self._dir / "robot"
-        robot_dir.mkdir(parents=True, exist_ok=True)
-        self._robot_path = robot_dir / f"{stem}.mp4"
-        self._robot_writer = cv2.VideoWriter(
-            str(self._robot_path), _FOURCC, self._fps, self._robot_resolution
-        )
+        """`robot/{stem}.mp4`(・`overhead/{stem}.mp4`)の収録を開始し、初期観測を1フレーム目として書き込む
+        (rgb_keyの観測が無い、またはrobot_resolution未設定の場合はロボット動画の書き込みをスキップする)"""
+        if self._robot_resolution is not None:
+            robot_dir = self._dir / "robot"
+            robot_dir.mkdir(parents=True, exist_ok=True)
+            self._robot_path = robot_dir / f"{stem}.mp4"
+            self._robot_writer = cv2.VideoWriter(
+                str(self._robot_path), _FOURCC, self._fps, self._robot_resolution
+            )
         if self._overhead_camera is not None:
             overhead_dir = self._dir / "overhead"
             overhead_dir.mkdir(parents=True, exist_ok=True)
@@ -87,19 +92,23 @@ class EpisodeRecorder:
                 self._fps,
                 tuple(self._overhead_camera.resolution),
             )
+        self._recording = True
         self.capture(obs)
 
     def capture(self, obs: dict) -> None:
         """1フレーム分を書き込む(収録中でなければ何もしない)"""
-        if self._robot_writer is None:
+        if not self._recording:
             return
-        write_frame(self._robot_writer, obs["rgb"])
+        rgb = obs.get(self._rgb_key)
+        if self._robot_writer is not None and rgb is not None:
+            # フレームスタック等でチャンネル数が3の倍数になる場合を想定し、末尾3ch(最新フレーム)のみ書き込む
+            write_frame(self._robot_writer, rgb[-3:])
         if self._overhead_writer is not None:
             write_frame(self._overhead_writer, self._overhead_camera.get_rgb())
 
     def finish(self, tag: str) -> None:
         """writerを閉じ、ファイル名末尾に終了理由タグを付ける(`{stem}_{タグ}.mp4`)"""
-        if self._robot_writer is None:
+        if not self._recording:
             return
         for writer, path in (
             (self._robot_writer, self._robot_path),
@@ -111,3 +120,4 @@ class EpisodeRecorder:
             path.rename(path.with_stem(f"{path.stem}_{tag}"))
         self._robot_writer = self._overhead_writer = None
         self._robot_path = self._overhead_path = None
+        self._recording = False

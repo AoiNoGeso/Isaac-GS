@@ -1,24 +1,24 @@
 import numpy as np
+from gymnasium import spaces
 from pydantic import BaseModel
 
-
-class ModelConfig(BaseModel):
-    input_rgb: bool = True  # RGB画像をエンコーダに入力する
-    input_goal: bool = True  # ゴールベクトルをエンコーダに入力する
+_FLOAT16_KEYS = frozenset({"dino_feat"})  # メモリ節約のためfloat16で保持するキー
+DINO_IMAGE_SIZE = 224  # DINOv3(dino_backbone.MODEL_ID)の学習解像度
 
 
 def replay_buffer_spec(
-    model_cfg: ModelConfig, hidden_size: int, grid_size: int
+    observation_space: spaces.Dict,
 ) -> tuple[dict[str, tuple[int, ...]], dict[str, type]]:
-    """ReplayBufferに保持するキーとdtypeをModelConfigから決定する"""
-    obs_spec: dict[str, tuple[int, ...]] = {}
-    obs_dtypes: dict[str, type] = {}
-    if model_cfg.input_rgb:
-        obs_spec["dino_feat"] = (hidden_size, grid_size, grid_size)
-        obs_dtypes["dino_feat"] = np.float16
-    if model_cfg.input_goal:
-        obs_spec["goal"] = (2,)
+    """ReplayBufferに保持するキーとdtypeを観測空間から決定する
+    (dino_featはfloat16で保持してメモリを節約する)"""
+    obs_spec = {k: tuple(sp.shape) for k, sp in observation_space.spaces.items()}
+    obs_dtypes = {k: np.float16 for k in observation_space.spaces if k in _FLOAT16_KEYS}
     return obs_spec, obs_dtypes
+
+
+def env_overrides() -> dict:
+    """EnvConfig.from_preset() へ渡すモデル固有の上書き"""
+    return {"camera_resolution": (DINO_IMAGE_SIZE, DINO_IMAGE_SIZE)}
 
 
 class TestConfig(BaseModel):
@@ -33,8 +33,8 @@ class TrainConfig(BaseModel):
     stage: str  # 学習対象ステージ名(必須)
     total_timesteps: int = 1_500_000
     project_name: str | None = "Isaac-GS"
-    run_name: str | None = "S2-PGB+G_corridor2_0827_buff30k"
-    log_dir: str = "runs_forSI/corridor2/S2-RGB+G/0827_buff30k"
+    run_name: str | None = "S2-PGB+G_corridor2_0904_buff30k"
+    log_dir: str = "runs_forSI/corridor2/S2-RGB+G/0904_buff30k"
     log_interval: int = 1_000
     checkpoint_interval: int = 100_000
     val_interval: int = 50_000  # 何stepごとにバリデーションを実行するか

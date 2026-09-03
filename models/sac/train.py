@@ -38,8 +38,8 @@ _OUT = sys.stdout
 
 from envs import PointNavGymEnv
 from envs.config import EnvConfig, get_preset
-from models.sac.config import ModelConfig, replay_buffer_spec
-from models.sac.network import make_encoder
+from models.sac.config import replay_buffer_spec
+from models.sac.network import make_encoder, model_observation_space
 from models.sac.policy import ReplayBuffer, SACAgent
 from utils.metrics import EpisodeTracker
 from utils.recorder import EpisodeRecorder, make_overhead_camera
@@ -78,10 +78,13 @@ def validation(env, agent, train_cfg: TrainConfig, recorder, step: int) -> dict:
 
 def main():
     """環境・エージェント・リプレイバッファを構築し、train()に処理を渡す"""
-    model_cfg = ModelConfig()
     env_cfg = EnvConfig.from_preset(train_cfg.stage)
     if args.num_humans is not None:
         env_cfg.num_humans = args.num_humans
+
+    # observation_spaceは__init__で確定するため、重いreset()を待たずに参照できる
+    env = PointNavGymEnv(env_cfg=env_cfg)
+    model_obs_space = model_observation_space(env.observation_space)
 
     use_wandb = not args.no_wandb
     if use_wandb:
@@ -90,15 +93,13 @@ def main():
             name=train_cfg.run_name,
             config={
                 "total_timesteps": train_cfg.total_timesteps,
-                "input_rgb": model_cfg.input_rgb,
-                "input_goal": model_cfg.input_goal,
+                "obs_keys": list(model_obs_space.spaces),
                 "num_humans": env_cfg.num_humans,
                 **{f"sac/{k}": getattr(train_cfg, k) for k in _LOGGED_SAC_KEYS},
             },
             dir=train_cfg.log_dir,
         )
 
-    env = PointNavGymEnv(env_cfg=env_cfg)
     obs, reset_info = env.reset()
 
     recorder = None
@@ -113,7 +114,7 @@ def main():
             overhead_camera=make_overhead_camera(get_preset(train_cfg.stage)),
         )
 
-    obs_spec, obs_dtypes = replay_buffer_spec(model_cfg, env_cfg.camera_resolution)
+    obs_spec, obs_dtypes = replay_buffer_spec(model_obs_space)
     action_dim = env.action_space.shape[0]
 
     buffer = ReplayBuffer(
@@ -125,7 +126,7 @@ def main():
     )
 
     agent = SACAgent(
-        encoder_factory=lambda: make_encoder(model_cfg, img_size=env_cfg.camera_resolution[0]),
+        encoder_factory=lambda: make_encoder(model_obs_space),
         action_dim=action_dim,
         cfg=train_cfg,
         device=DEVICE,
@@ -140,8 +141,8 @@ def main():
     tracker.reset(obs, reset_info)
 
     print(
-        f"[train] modality=(rgb={model_cfg.input_rgb}, goal={model_cfg.input_goal}, "
-        f"humans={env_cfg.num_humans})  device={DEVICE}  total={train_cfg.total_timesteps:,}"
+        f"[train] obs_keys={list(model_obs_space.spaces)}  "
+        f"humans={env_cfg.num_humans}  device={DEVICE}  total={train_cfg.total_timesteps:,}"
     )
 
     train(

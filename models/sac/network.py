@@ -1,16 +1,17 @@
 import torch
 import torch.nn as nn
+from gymnasium import spaces
 
-from models.sac.config import ModelConfig
+_KEY_ORDER = ("rgb", "goal")  # 特徴量の連結順。既存チェックポイントとの整合のため変更禁止
 
 
 class CNNEncoder(nn.Module):
     """RGB画像を特徴ベクトルに変換するCNN"""
 
-    def __init__(self, img_size: int = 84):
+    def __init__(self, img_size: int = 84, in_channels: int = 3):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=8, stride=4),
+            nn.Conv2d(in_channels, 32, kernel_size=8, stride=4),
             nn.ReLU(),
             nn.Conv2d(32, 64, kernel_size=4, stride=2),
             nn.ReLU(),
@@ -19,7 +20,7 @@ class CNNEncoder(nn.Module):
             nn.Flatten(),
         )
         with torch.no_grad():
-            flat_dim = self.net(torch.zeros(1, 3, img_size, img_size)).shape[1]
+            flat_dim = self.net(torch.zeros(1, in_channels, img_size, img_size)).shape[1]
         self.fc = nn.Sequential(nn.Linear(flat_dim, 256), nn.ReLU())
         self.out_dim = 256
 
@@ -30,9 +31,9 @@ class CNNEncoder(nn.Module):
 class GoalEncoder(nn.Module):
     """ゴールベクトル[距離, 相対角度]を特徴ベクトルに変換する"""
 
-    def __init__(self):
+    def __init__(self, in_dim: int = 2):
         super().__init__()
-        self.fc = nn.Sequential(nn.Linear(2, 32), nn.ELU())
+        self.fc = nn.Sequential(nn.Linear(in_dim, 32), nn.ELU())
         self.out_dim = 32
 
     def forward(self, g: torch.Tensor) -> torch.Tensor:
@@ -40,33 +41,35 @@ class GoalEncoder(nn.Module):
 
 
 class PointNavEncoder(nn.Module):
-    """CNNEncoderとGoalEncoderを設定に応じて組み合わせる統合エンコーダ"""
+    """CNNEncoderとGoalEncoderを観測空間に応じて組み合わせる統合エンコーダ"""
 
-    def __init__(self, input_rgb: bool = True, input_goal: bool = True, img_size: int = 84):
+    def __init__(self, observation_space: spaces.Dict):
         super().__init__()
-        self.input_rgb = input_rgb
-        self.input_goal = input_goal
+        self.keys = tuple(k for k in _KEY_ORDER if k in observation_space.spaces)
         self.out_dim = 0
-        if input_rgb:
-            self.cnn = CNNEncoder(img_size)
+        if "rgb" in self.keys:
+            c, h, w = observation_space["rgb"].shape
+            assert h == w, f"CNNEncoderは正方形画像のみ対応: {(h, w)}"
+            self.cnn = CNNEncoder(img_size=h, in_channels=c)
             self.out_dim += self.cnn.out_dim
-        if input_goal:
-            self.goal_enc = GoalEncoder()
+        if "goal" in self.keys:
+            self.goal_enc = GoalEncoder(in_dim=observation_space["goal"].shape[0])
             self.out_dim += self.goal_enc.out_dim
 
     def forward(self, obs: dict) -> torch.Tensor:
         parts = []
-        if self.input_rgb:
+        if "rgb" in self.keys:
             parts.append(self.cnn(obs["rgb"]))
-        if self.input_goal:
+        if "goal" in self.keys:
             parts.append(self.goal_enc(obs["goal"]))
         return torch.cat(parts, dim=-1)
 
 
-def make_encoder(model_cfg: ModelConfig, img_size: int) -> PointNavEncoder:
+def model_observation_space(env_obs_space: spaces.Dict) -> spaces.Dict:
+    """envの観測空間からこのモデルが消費する空間へ変換する(sacでは恒等)"""
+    return env_obs_space
+
+
+def make_encoder(observation_space: spaces.Dict) -> PointNavEncoder:
     """train/test/deployで共通のエンコーダ生成関数"""
-    return PointNavEncoder(
-        input_rgb=model_cfg.input_rgb,
-        input_goal=model_cfg.input_goal,
-        img_size=img_size,
-    )
+    return PointNavEncoder(observation_space)

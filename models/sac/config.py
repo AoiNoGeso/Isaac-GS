@@ -1,26 +1,23 @@
 import numpy as np
+from gymnasium import spaces
 from pydantic import BaseModel
 
-
-class ModelConfig(BaseModel):
-    input_rgb: bool = True  # RGB画像をエンコーダに入力する
-    input_goal: bool = True  # ゴールベクトルをエンコーダに入力する
+_UINT8_KEYS = frozenset({"rgb"})  # [0,1] floatで受け取りuint8で保持するキー
 
 
 def replay_buffer_spec(
-    model_cfg: ModelConfig, camera_resolution: tuple[int, int]
+    observation_space: spaces.Dict,
 ) -> tuple[dict[str, tuple[int, ...]], dict[str, type]]:
-    """ReplayBufferに保持するキーとdtypeをModelConfigから決定する
+    """ReplayBufferに保持するキーとdtypeを観測空間から決定する
     (rgbはuint8で保持してメモリを節約する)"""
-    W, H = camera_resolution
-    obs_spec: dict[str, tuple[int, ...]] = {}
-    obs_dtypes: dict[str, type] = {}
-    if model_cfg.input_rgb:
-        obs_spec["rgb"] = (3, H, W)
-        obs_dtypes["rgb"] = np.uint8
-    if model_cfg.input_goal:
-        obs_spec["goal"] = (2,)
+    obs_spec = {k: tuple(sp.shape) for k, sp in observation_space.spaces.items()}
+    obs_dtypes = {k: np.uint8 for k in observation_space.spaces if k in _UINT8_KEYS}
     return obs_spec, obs_dtypes
+
+
+def env_overrides() -> dict:
+    """EnvConfig.from_preset() へ渡すモデル固有の上書き(sacでは無し)"""
+    return {}
 
 
 class TestConfig(BaseModel):

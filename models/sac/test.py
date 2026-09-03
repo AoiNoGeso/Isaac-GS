@@ -36,8 +36,8 @@ _OUT = sys.stdout
 
 from envs import PointNavGymEnv
 from envs.config import EnvConfig, get_preset, stage_names
-from models.sac.config import ModelConfig, TestConfig, TrainConfig
-from models.sac.network import make_encoder
+from models.sac.config import TestConfig, TrainConfig
+from models.sac.network import make_encoder, model_observation_space
 from models.sac.policy import SACAgent
 from utils.recorder import EpisodeRecorder, make_overhead_camera
 from utils.rollout import evaluate
@@ -63,7 +63,6 @@ def main():
     print(f"[test] Episodes: {test_cfg.episodes_per_stage}")
     print(f"[test] num_humans: {args.num_humans}")
 
-    model_cfg = ModelConfig()
     env_cfg = EnvConfig.from_preset(
         stage_name,
         show_camera_viewport=not args.headless,
@@ -73,9 +72,10 @@ def main():
     env = PointNavGymEnv(env_cfg=env_cfg)
     env.reset()  # 俯瞰カメラ生成にはステージのロードが済んでいる必要がある
     action_dim = env.action_space.shape[0]
+    model_obs_space = model_observation_space(env.observation_space)
 
     agent = SACAgent(
-        encoder_factory=lambda: make_encoder(model_cfg, img_size=env_cfg.camera_resolution[0]),
+        encoder_factory=lambda: make_encoder(model_obs_space),
         action_dim=action_dim,
         cfg=TrainConfig(stage=stage_name),
         device=DEVICE,

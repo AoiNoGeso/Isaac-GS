@@ -57,9 +57,9 @@ _OUT = sys.stdout
 
 from envs import PointNavGymEnv
 from envs.config import EnvConfig, get_preset, stage_names
-from models.sac_DINOv3.config import ModelConfig, TestConfig, TrainConfig
+from models.sac_DINOv3.config import TestConfig, TrainConfig
 from models.sac_DINOv3.dino_backbone import DINOBackbone, DINOEnvWrapper
-from models.sac_DINOv3.network import make_encoder
+from models.sac_DINOv3.network import make_encoder, model_observation_space
 from models.sac_DINOv3.policy import SACAgent
 from utils.recorder import EpisodeRecorder, make_overhead_camera
 from utils.rollout import evaluate
@@ -133,7 +133,6 @@ def main():
             dir=str(log_dir),
         )
 
-    model_cfg = ModelConfig()
     backbone = DINOBackbone(device=DEVICE)
     # DINOv3の学習解像度(224x224)にIsaacSim側のレンダリング解像度を合わせる
     env_cfg = EnvConfig.from_preset(
@@ -144,13 +143,14 @@ def main():
     )
 
     env = DINOEnvWrapper(PointNavGymEnv(env_cfg=env_cfg), backbone)
+    model_obs_space = model_observation_space(env.observation_space)
     env.reset()  # 俯瞰カメラ生成にはステージのロードが済んでいる必要がある
     action_dim = env.action_space.shape[0]
 
     # agentはstate_dictの再ロードだけで使い回せる(policy.SACAgent.load参照)ため、
     # チェックポイントごとに再構築せず、Isaac Simの起動は1度だけで済ませる。
     agent = SACAgent(
-        encoder_factory=lambda: make_encoder(model_cfg, backbone.hidden_size, backbone.grid_size),
+        encoder_factory=lambda: make_encoder(model_obs_space),
         action_dim=action_dim,
         cfg=TrainConfig(stage=stage_name),
         device=DEVICE,

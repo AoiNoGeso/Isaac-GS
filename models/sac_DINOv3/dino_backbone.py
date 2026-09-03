@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import numpy as np
 import torch
+from gymnasium import spaces
+
+from models.sac_DINOv3.config import DINO_IMAGE_SIZE
 
 MODEL_ID = "facebook/dinov3-vits16-pretrain-lvd1689m"
 
@@ -31,6 +34,10 @@ class DINOBackbone:
             p.requires_grad_(False)
 
         cfg = self._model.config
+        assert cfg.image_size == DINO_IMAGE_SIZE, (
+            f"HuggingFace設定のimage_size({cfg.image_size})がconfig.DINO_IMAGE_SIZE"
+            f"({DINO_IMAGE_SIZE})と不一致"
+        )
         self.hidden_size: int = cfg.hidden_size
         self.patch_size: int = cfg.patch_size
         self.num_register_tokens: int = cfg.num_register_tokens
@@ -65,7 +72,16 @@ class DINOEnvWrapper:
         self._env = env
         self._backbone = backbone
         self.action_space = env.action_space
-        self.observation_space = env.observation_space
+        # Phase Bでラッパーごと削除する暫定措置
+        dino_feat_space = spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(backbone.hidden_size, backbone.grid_size, backbone.grid_size),
+            dtype=np.float32,
+        )
+        self.observation_space = spaces.Dict(
+            {**env.observation_space.spaces, "dino_feat": dino_feat_space}
+        )
 
     def _augment(self, obs: dict) -> dict:
         obs = dict(obs)
