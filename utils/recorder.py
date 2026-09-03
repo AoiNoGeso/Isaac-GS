@@ -32,6 +32,14 @@ def make_overhead_camera(stage_preset, resolution: tuple[int, int] = OVERHEAD_CA
     )
 
 
+def robot_resolution_from_space(obs_space, rgb_key: str = "rgb") -> tuple[int, int] | None:
+    """観測空間からEpisodeRecorder用の(W, H)を求める。rgb観測が無ければNone"""
+    if rgb_key not in obs_space.spaces:
+        return None
+    shape = obs_space[rgb_key].shape  # (C, H, W)
+    return (shape[2], shape[1])
+
+
 def write_frame(writer: cv2.VideoWriter, rgb: np.ndarray) -> None:
     """RGBフレームをBGRへ直してwriterへ書き込む
     (3,H,W) float32 [0,1] の観測形式と (H,W,3) uint8 のカメラ出力形式の両方を受け付ける"""

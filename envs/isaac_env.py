@@ -7,6 +7,7 @@ from gymnasium import spaces
 from envs.config import EnvConfig, RobotConfig
 from envs.geometry import goal_vec, quat_to_yaw
 from envs.human_controller import HumanManager
+from envs.observations import ObservationManager, RGBCameraCfg, observation_space_from_cfg
 
 # 落下判定
 FALL_Z_THRESHOLD = -50.0
@@ -74,8 +75,6 @@ class PointNavIsaacEnv:
         from isaacsim.core.utils.stage import add_reference_to_stage
         from isaacsim.sensors.experimental.physics import Contact, ContactSensor
         from pxr import Gf, PhysxSchema, Usd, UsdGeom, UsdPhysics
-
-        from envs.sensors.camera_sensor import RGBCamera
 
         robot = self.robot_cfg
         kit_app = omni.kit.app.get_app()
@@ -157,22 +156,11 @@ class PointNavIsaacEnv:
         self._contact_sensor = ContactSensor(contact_authoring)
         self._contact_sensor.add_raw_contact_data_to_frame()
 
-        self._camera = RGBCamera(
-            camera_prim_path=robot.camera_prim_path,
-            resolution=self.env_cfg.camera_resolution,
-            translation=(
-                np.array(robot.camera_translation)
-                if robot.camera_translation is not None
-                else None
-            ),
-            orientation=(
-                np.array(robot.camera_orientation)
-                if robot.camera_orientation is not None
-                else None
-            ),
-        )
+        self._obs_mgr = ObservationManager(self.env_cfg.observations, self)
 
-        if self.env_cfg.show_camera_viewport:
+        if self.env_cfg.show_camera_viewport and any(
+            isinstance(cfg, RGBCameraCfg) for cfg in self.env_cfg.observations.values()
+        ):
             self._setup_camera_viewport()
 
         self._human_mgr = HumanManager(self.env_cfg, self._world, self._inav)
@@ -284,7 +272,7 @@ class PointNavIsaacEnv:
         if self._has_humans:
             self._human_mgr.reset_humans(robot_pos_xy=(float(robot_pos[0]), float(robot_pos[1])))
 
-        return self._get_obs()
+        return self._obs_mgr.reset()
 
     def step(self, action: np.ndarray) -> tuple[dict, float, bool, bool, dict]:
         """行動[v_x, ω]を1ステップ実行し(obs, reward, terminated, truncated, info)を返す"""
@@ -384,12 +372,8 @@ class PointNavIsaacEnv:
         }
 
     def _get_obs(self) -> dict:
-        """rgb/goalの2キーからなる観測を生成する"""
-        rgb = self._camera.get_rgb()
-        return {
-            "rgb": (rgb.astype(np.float32) / 255.0).transpose(2, 0, 1),
-            "goal": self._compute_goal_vec(),
-        }
+        """観測設定(observations)に従って観測を生成する"""
+        return self._obs_mgr.compute()
 
     def _dist_to_goal(self, pos: np.ndarray) -> float:
         """ロボットからゴールまでの水平距離 [m]"""
@@ -577,18 +561,8 @@ class PointNavGymEnv(gym.Env):
     def __init__(self, env_cfg: EnvConfig):
         super().__init__()
         self.env_cfg = env_cfg
-        W, H = self.env_cfg.camera_resolution
 
-        self.observation_space = spaces.Dict(
-            {
-                "rgb": spaces.Box(0.0, 1.0, shape=(3, H, W), dtype=np.float32),
-                "goal": spaces.Box(
-                    low=np.array([0.0, -1.0], dtype=np.float32),
-                    high=np.array([np.inf, 1.0], dtype=np.float32),
-                    dtype=np.float32,
-                ),
-            }
-        )
+        self.observation_space = observation_space_from_cfg(env_cfg.observations)
         self.action_space = spaces.Box(-1.0, 1.0, shape=(2,), dtype=np.float32)
         self._env: PointNavIsaacEnv | None = None
 

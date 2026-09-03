@@ -2,6 +2,8 @@ import numpy as np
 from gymnasium import spaces
 from pydantic import BaseModel
 
+from envs.observations import GoalCfg, RGBCameraCfg
+
 _FLOAT16_KEYS = frozenset({"dino_feat"})  # メモリ節約のためfloat16で保持するキー
 DINO_IMAGE_SIZE = 224  # DINOv3(dino_backbone.MODEL_ID)の学習解像度
 
@@ -18,7 +20,12 @@ def replay_buffer_spec(
 
 def env_overrides() -> dict:
     """EnvConfig.from_preset() へ渡すモデル固有の上書き"""
-    return {"camera_resolution": (DINO_IMAGE_SIZE, DINO_IMAGE_SIZE)}
+    return {
+        "observations": {
+            "rgb": RGBCameraCfg(resolution=(DINO_IMAGE_SIZE, DINO_IMAGE_SIZE)),
+            "goal": GoalCfg(),
+        }
+    }
 
 
 class TestConfig(BaseModel):

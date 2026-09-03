@@ -57,11 +57,10 @@ _OUT = sys.stdout
 
 from envs import PointNavGymEnv
 from envs.config import EnvConfig, get_preset, stage_names
-from models.sac_DINOv3.config import TestConfig, TrainConfig
-from models.sac_DINOv3.dino_backbone import get_backbone
+from models.sac_DINOv3.config import TestConfig, TrainConfig, env_overrides
 from models.sac_DINOv3.network import build_obs_pipeline, make_encoder
 from models.sac_DINOv3.policy import SACAgent
-from utils.recorder import EpisodeRecorder, make_overhead_camera
+from utils.recorder import EpisodeRecorder, make_overhead_camera, robot_resolution_from_space
 from utils.rollout import evaluate
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -133,13 +132,12 @@ def main():
             dir=str(log_dir),
         )
 
-    backbone = get_backbone(DEVICE)
     # DINOv3の学習解像度(224x224)にIsaacSim側のレンダリング解像度を合わせる
     env_cfg = EnvConfig.from_preset(
         stage_name,
         show_camera_viewport=not args.headless,
         num_humans=args.num_humans,
-        camera_resolution=(backbone.image_size, backbone.image_size),
+        **env_overrides(),
     )
 
     env = PointNavGymEnv(env_cfg=env_cfg)
@@ -175,7 +173,7 @@ def main():
                 recorder = EpisodeRecorder(
                     out_dir=Path(args.video_dir) / ckpt_path.stem,
                     fps=1.0 / (env_cfg.physics_dt * env_cfg.decimation),
-                    robot_resolution=env_cfg.camera_resolution,
+                    robot_resolution=robot_resolution_from_space(env.observation_space),
                     overhead_camera=overhead_camera,
                 )
 

@@ -40,7 +40,7 @@ class DINOBackbone:
         self.hidden_size: int = cfg.hidden_size
         self.patch_size: int = cfg.patch_size
         self.num_register_tokens: int = cfg.num_register_tokens
-        self.image_size: int = cfg.image_size  # 224 EnvConfig.camera_resolutionをこれに合わせる
+        self.image_size: int = cfg.image_size  # 224 RGBCameraCfg.resolutionをこれに合わせる
         self.grid_size: int = self.image_size // self.patch_size  # 14
 
         self._mean = _MEAN.to(device)
@@ -49,7 +49,7 @@ class DINOBackbone:
     @torch.no_grad()
     def extract(self, rgb: np.ndarray) -> np.ndarray:
         """rgb: (3,H,W) float32 [0,1] の観測1枚から、パッチグリッド特徴(hidden_size, grid, grid)を返す
-        (H,WはEnvConfig.camera_resolutionでimage_sizeに合わせておくこと。前処理はここで正規化のみ行う)"""
+        (H,WはRGBCameraCfg.resolutionでimage_sizeに合わせておくこと。前処理はここで正規化のみ行う)"""
         x = torch.from_numpy(rgb).to(self.device, dtype=torch.float32).unsqueeze(0)
         x = (x - self._mean) / self._std
 

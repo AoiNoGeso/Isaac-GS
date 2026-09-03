@@ -1,5 +1,6 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
+from envs.observations import GoalCfg, ObsTermCfg, RGBCameraCfg
 from envs.stage_config import STAGE_PRESETS, StagePreset, get_preset, stage_names
 
 __all__ = [
@@ -43,13 +44,17 @@ JACKAL = RobotConfig()
 
 
 class EnvConfig(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     # ステージ/ロボット
     stage_path: str  # 必須。EnvConfig.from_preset()経由での生成を推奨
     floor_prim_path: str = "/World/env/floor_mesh"
     wall_prim_path: str = "/World/env/wall_mesh"
     robot: RobotConfig = Field(default_factory=lambda: JACKAL)
     show_camera_viewport: bool = False
-    camera_resolution: tuple[int, int] = (84, 84)
+    observations: dict[str, ObsTermCfg] = Field(
+        default_factory=lambda: {"rgb": RGBCameraCfg(), "goal": GoalCfg()}
+    )
 
     # 物理/エピソード
     physics_dt: float = 1.0 / 60.0

@@ -61,7 +61,7 @@ import wandb
 from envs import PointNavGymEnv
 from envs.config import EnvConfig, get_preset
 from utils.metrics import EpisodeTracker
-from utils.recorder import EpisodeRecorder, make_overhead_camera
+from utils.recorder import EpisodeRecorder, make_overhead_camera, robot_resolution_from_space
 from utils.train_loop import train
 
 mnet = importlib.import_module(f"models.{args.model}.network")
@@ -117,7 +117,7 @@ def main():
             # 動画1フレーム=env.step()1回(decimation物理サブステップぶんの時間経過)なので、
             # fpsはrendering_dtではなくenv.step()の呼び出し頻度に合わせる
             fps=1.0 / (env_cfg.physics_dt * env_cfg.decimation),
-            robot_resolution=env_cfg.camera_resolution,
+            robot_resolution=robot_resolution_from_space(env.observation_space),
             overhead_camera=make_overhead_camera(get_preset(train_cfg.stage)),
         )
 

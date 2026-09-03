@@ -39,7 +39,7 @@ from envs.config import EnvConfig, get_preset, stage_names
 from models.sac.config import TestConfig, TrainConfig
 from models.sac.network import build_obs_pipeline, make_encoder
 from models.sac.policy import SACAgent
-from utils.recorder import EpisodeRecorder, make_overhead_camera
+from utils.recorder import EpisodeRecorder, make_overhead_camera, robot_resolution_from_space
 from utils.rollout import evaluate
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -91,7 +91,7 @@ def main():
             # 動画1フレーム=env.step()1回(decimation物理サブステップぶんの時間経過)なので、
             # fpsはrendering_dtではなくenv.step()の呼び出し頻度に合わせる
             fps=1.0 / (env_cfg.physics_dt * env_cfg.decimation),
-            robot_resolution=env_cfg.camera_resolution,
+            robot_resolution=robot_resolution_from_space(env.observation_space),
             overhead_camera=overhead_camera,
         )
         print(f"[test] video: enabled -> {video_dir}/")

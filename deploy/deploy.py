@@ -17,11 +17,12 @@ from tf2_ros import Buffer, TransformListener
 
 from envs.config import JACKAL, EnvConfig
 from envs.geometry import goal_vec, quat_to_yaw
+from envs.observations import RGBCameraCfg
 from models.sac.policy import SACAgent
 
 # 学習時と推論時で条件がずれないよう、既定値はすべてシミュレータ側の設定から引く
 _ENV_DEFAULTS = EnvConfig.model_fields
-_IMG_SIZE = _ENV_DEFAULTS["camera_resolution"].default[0]  # 入力画像の一辺 [px]
+_IMG_SIZE = RGBCameraCfg().resolution[0]  # 入力画像の一辺 [px]
 _GOAL_THRESHOLD = _ENV_DEFAULTS["goal_threshold"].default  # ゴール到達判定の距離 [m]
 _V_MAX = JACKAL.v_linear_max  # 最大直進速度 [m/s]
 _W_MAX = JACKAL.v_angular_max  # 最大角速度 [rad/s]
