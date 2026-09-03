@@ -31,13 +31,13 @@ class TrainConfig(BaseModel):
 
     stage: str  # 学習対象ステージ名(必須)
     total_timesteps: int = 1_500_000
-    project_name: str | None = "Isaac-GS_PointNav"
-    run_name: str | None = "S1-PGB+G_corridor2_0824"
-    log_dir: str = "runs/S1-RGB+G/corridor2/0824"
+    project_name: str | None = "Isaac-GS"
+    run_name: str | None = "S1-RGB+G_corridor2_0824"
+    log_dir: str = "runs/corridor2/S1-RGB+G/0824"
     log_interval: int = 1_000
     checkpoint_interval: int = 50_000
     val_interval: int = 100_000  # 何stepごとにバリデーションを実行するか
-    val_episodes: int = 10 # バリデーション1回あたりのエピソード数10
+    val_episodes: int = 10  # バリデーション1回あたりのエピソード数
     val_video_episodes: int = 10  # バリデーション毎に動画を撮るエピソード数(0で無効)
 
     # SACハイパーパラメータ

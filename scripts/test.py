@@ -136,7 +136,6 @@ def main():
 
     env_cfg = EnvConfig.from_preset(
         stage_name,
-        show_camera_viewport=not args.headless,
         num_humans=args.num_humans,
         **mcfg.env_overrides(),
     )

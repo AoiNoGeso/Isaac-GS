@@ -13,12 +13,12 @@ from envs.observations.registry import build_term
 
 
 def observation_space_from_cfg(terms_cfg: dict[str, ObsTermCfg]) -> spaces.Dict:
-    """history_lengthを適用した最終的な観測空間を返す(Isaac Sim不要)。
+    """stack_sizeを適用した最終的な観測空間を返す(Isaac Sim不要)。
     env側の観測スキーマの唯一の情報源"""
     spaces_dict: dict[str, spaces.Box] = {}
     for name, cfg in terms_cfg.items():
         frame_space = cfg.frame_space()
-        n = cfg.history_length
+        n = cfg.stack_size
         if n == 1:
             spaces_dict[name] = frame_space
             continue
@@ -36,7 +36,7 @@ class ObservationManager:
         self._terms_cfg = terms_cfg
         self._terms = {name: build_term(cfg, env) for name, cfg in terms_cfg.items()}
         self._history: dict[str, deque[np.ndarray]] = {
-            name: deque(maxlen=cfg.history_length) for name, cfg in terms_cfg.items()
+            name: deque(maxlen=cfg.stack_size) for name, cfg in terms_cfg.items()
         }
 
     def _push(self, name: str, frame: np.ndarray) -> np.ndarray:
@@ -56,7 +56,7 @@ class ObservationManager:
         return out
 
     def compute(self) -> dict:
-        """各termを評価し、history_lengthぶんスタックした観測dictを返す"""
+        """各termを評価し、stack_sizeぶんスタックした観測dictを返す"""
         out = {}
         for name in self._terms_cfg:
             out[name] = self._push(name, self._terms[name].compute())

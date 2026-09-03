@@ -20,7 +20,7 @@ from gymnasium import spaces
 class ObsTermCfg:
     """観測項目の共通設定"""
 
-    history_length: int = 1  # 1でスタック無し。Nで直近Nフレームをチャンネル方向に連結
+    stack_size: int = 1  # 1でスタック無し。Nで直近Nフレームをチャンネル方向に連結
 
     @property
     def frame_shape(self) -> tuple[int, ...]:

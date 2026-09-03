@@ -51,7 +51,6 @@ class EnvConfig(BaseModel):
     floor_prim_path: str = "/World/env/floor_mesh"
     wall_prim_path: str = "/World/env/wall_mesh"
     robot: RobotConfig = Field(default_factory=lambda: JACKAL)
-    show_camera_viewport: bool = False
     observations: dict[str, ObsTermCfg] = Field(
         default_factory=lambda: {"rgb": RGBCameraCfg(), "goal": GoalCfg()}
     )

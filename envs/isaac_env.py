@@ -7,7 +7,7 @@ from gymnasium import spaces
 from envs.config import EnvConfig, RobotConfig
 from envs.geometry import goal_vec, quat_to_yaw
 from envs.human_controller import HumanManager
-from envs.observations import ObservationManager, RGBCameraCfg, observation_space_from_cfg
+from envs.observations import ObservationManager, observation_space_from_cfg
 
 # 落下判定
 FALL_Z_THRESHOLD = -50.0
@@ -158,11 +158,6 @@ class PointNavIsaacEnv:
 
         self._obs_mgr = ObservationManager(self.env_cfg.observations, self)
 
-        if self.env_cfg.show_camera_viewport and any(
-            isinstance(cfg, RGBCameraCfg) for cfg in self.env_cfg.observations.values()
-        ):
-            self._setup_camera_viewport()
-
         self._human_mgr = HumanManager(self.env_cfg, self._world, self._inav)
         if self._has_humans:
             self._human_mgr.inject_humans(stage)
@@ -210,17 +205,6 @@ class PointNavIsaacEnv:
             for k, v in original.items():
                 if v is not None:
                     settings.set(k, v)
-
-    def _setup_camera_viewport(self):
-        try:
-            import omni.kit.viewport.utility as vp_util
-
-            vp_win = vp_util.create_viewport_window("Robot Camera", width=320, height=240)
-            vp_win.viewport_api.set_active_camera(self.robot_cfg.camera_prim_path)
-        except Exception as e:
-            import carb
-
-            carb.log_warn(f"[PointNavIsaacEnv] Camera viewport window skipped: {e}")
 
     # ------------------------------------------------------------------
     # reset / step
