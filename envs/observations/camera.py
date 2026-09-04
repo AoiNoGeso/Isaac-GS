@@ -1,3 +1,6 @@
+"""Isaac Sim USDカメラprimを扱う低レベルセンサーラッパー。
+RGBCameraTerm(観測用)とmake_overhead_camera(録画用)の両方から使われる"""
+
 import numpy as np
 
 

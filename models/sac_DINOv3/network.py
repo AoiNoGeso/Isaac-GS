@@ -43,16 +43,19 @@ class GoalEncoder(nn.Module):
 
 
 class PointNavEncoder(nn.Module):
-    """DINOHeadとGoalEncoderを観測空間に応じて組み合わせる統合エンコーダ"""
+    """DINOHeadとGoalEncoderを観測空間に応じて組み合わせる統合エンコーダ
 
-    def __init__(self, observation_space: spaces.Dict):
+    stack_sizeはReplayBufferの遅延スタッキングで結合されるdino_featのフレーム数
+    (observation_spaceはスタック前=1フレームぶんの形状のため、ここでhidden_sizeへ反映する)"""
+
+    def __init__(self, observation_space: spaces.Dict, stack_size: int = 1):
         super().__init__()
         self.keys = tuple(k for k in _KEY_ORDER if k in observation_space.spaces)
         self.out_dim = 0
         if "dino_feat" in self.keys:
             hidden_size, grid_h, grid_w = observation_space["dino_feat"].shape
             assert grid_h == grid_w, f"DINOHeadは正方形グリッドのみ対応: {(grid_h, grid_w)}"
-            self.dino_head = DINOHead(hidden_size, grid_h)
+            self.dino_head = DINOHead(hidden_size * stack_size, grid_h)
             self.out_dim += self.dino_head.out_dim
         if "goal" in self.keys:
             self.goal_enc = GoalEncoder(in_dim=observation_space["goal"].shape[0])
@@ -73,6 +76,6 @@ def build_obs_pipeline(env_obs_space: spaces.Dict, device: str) -> tuple[spaces.
     return transform.transform_observation_space(env_obs_space), transform
 
 
-def make_encoder(observation_space: spaces.Dict) -> PointNavEncoder:
+def make_encoder(observation_space: spaces.Dict, stack_size: int = 1) -> PointNavEncoder:
     """train/test/deployで共通のエンコーダ生成関数"""
-    return PointNavEncoder(observation_space)
+    return PointNavEncoder(observation_space, stack_size=stack_size)

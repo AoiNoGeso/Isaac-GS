@@ -101,6 +101,7 @@ def main():
             config={
                 "total_timesteps": train_cfg.total_timesteps,
                 "obs_keys": list(model_obs_space.spaces),
+                "stack_size": train_cfg.stack_size,
                 "num_humans": env_cfg.num_humans,
                 **{f"sac/{k}": getattr(train_cfg, k) for k in _LOGGED_SAC_KEYS},
             },
@@ -130,10 +131,11 @@ def main():
         obs_dtypes=obs_dtypes,
         action_dim=action_dim,
         device=DEVICE,
+        stack_size=train_cfg.stack_size,
     )
 
     agent = mpol.SACAgent(
-        encoder_factory=lambda: mnet.make_encoder(model_obs_space),
+        encoder_factory=lambda: mnet.make_encoder(model_obs_space, stack_size=train_cfg.stack_size),
         action_dim=action_dim,
         cfg=train_cfg,
         device=DEVICE,
@@ -165,6 +167,7 @@ def main():
         obs_transform=obs_transform,
         train_cfg=train_cfg,
         out=_OUT,
+        stack_size=train_cfg.stack_size,
     )
 
     if use_wandb:

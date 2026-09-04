@@ -18,7 +18,7 @@ def make_overhead_camera(stage_preset, resolution: tuple[int, int] = OVERHEAD_CA
     if stage_preset.overhead_camera_translation is None:
         return None
 
-    from envs.sensors.camera_sensor import RGBCamera
+    from envs.observations.camera import RGBCamera
 
     return RGBCamera(
         camera_prim_path=OVERHEAD_CAMERA_PRIM_PATH,

@@ -13,7 +13,7 @@ from envs.observations.registry import register_obs_term
 @register_obs_term(RGBCameraCfg)
 class RGBCameraTerm:
     def __init__(self, cfg: RGBCameraCfg, env: Any):
-        from envs.sensors.camera_sensor import RGBCamera  # 遅延import: isaacsim依存
+        from envs.observations.camera import RGBCamera  # 遅延import: isaacsim依存
 
         robot = env.robot_cfg
         self._cam = RGBCamera(

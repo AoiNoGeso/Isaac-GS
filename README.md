@@ -25,7 +25,7 @@ RL 学習 (scripts/train.py)  ← 起動時に NavMesh をランタイム bake
 ## 前提条件
 
 - uv がインストールされていること
-- CUDA 対応の GPU 環境(RTX 4090 で動作確認)
+- CUDA 対応の GPU 環境
 - [Recon-GS](https://github.com/AoiNoGeso/Recon-GS) で生成した `gaussian.ply`・`floor.ply`・`wall.ply`
 
 ## ディレクトリ構成
@@ -41,44 +41,51 @@ Isaac-GS/
 │   ├── convert_gs.py            # GS (.ply) → .usdc 変換
 │   ├── convert_mesh.py          # メッシュ (.ply) → .usd 変換
 │   ├── compose.py                # gs.usdc + floor/wall → stage.usda 合成
-│   └── coords.py                 # source-up-axis → Z-up 座標変換(共通)
+│   └── coords.py                 # source-up-axis → Z-up 座標変換
 ├── assets/
 │   ├── stages/                    # ステージファイル置き場
-│   │   ├── room1/stage.usda
-│   │   ├── corridor1/stage.usda
-│   │   └── corridor2/stage.usda
 │   └── avatars/                   # 人物アバターUSD置き場(utils/convert_glb2usd.pyの出力先)
 ├── envs/
-│   ├── config.py                 # EnvConfig / RobotConfig(+JACKAL)
+│   ├── config.py                 # EnvConfig(observations辞書 + 物理/報酬/人物設定) / RobotConfig(+JACKAL)
 │   ├── stage_config.py           # StagePreset / STAGE_PRESETS / get_preset / stage_names
 │   ├── geometry.py               # quat_to_yaw / goal_vec(isaacsim 非依存、env と deploy で共用)
 │   ├── isaac_env.py              # IsaacSim 環境コア (PointNavIsaacEnv) + gymnasium ラッパー (PointNavGymEnv)
-│   ├── human_controller/         # 人物キャラの衝突回避・歩行モーション・USD配置
-│   │   ├── base.py               # CrowdController(Protocol) — 衝突回避アルゴリズムの共通インターフェース
-│   │   ├── human_manager.py      # HumanManager — CrowdController + LocomotionPool を接続するマネージャ
-│   │   ├── locomotion.py         # LocomotionPool/LocomotionAgent — ai4animationpyによる歩行モーション生成
-│   │   └── controllers/orca/     # ORCASimulator(RVO2ラッパー)
-│   └── sensors/
-│       └── camera_sensor.py      # RGB カメラセンサ (RGBCamera)
+│   ├── observations/              # 観測項目(term)レジストリ — モデルが要求するモダリティをここで宣言
+│   │   ├── base.py               # ObsTermCfg / RGBCameraCfg / GoalCfg(plain dataclass)
+│   │   ├── registry.py           # register_obs_term / build_term
+│   │   ├── terms.py              # RGBCameraTerm / GoalTerm(実装本体)
+│   │   ├── manager.py            # ObservationManager / observation_space_from_cfg
+│   │   └── camera.py             # RGBCamera(USDカメラprimの低レベルラッパー)
+│   └── human_controller/         # 人物キャラの衝突回避・歩行モーション・USD配置
+│       ├── base.py               # CrowdController(Protocol) — 衝突回避アルゴリズムの共通インターフェース
+│       ├── human_manager.py      # HumanManager — CrowdController + LocomotionPool を接続するマネージャ
+│       ├── locomotion.py         # LocomotionPool/LocomotionAgent — ai4animationpyによる歩行モーション生成
+│       └── controllers/orca/     # ORCASimulator(RVO2ラッパー)
 ├── models/
-│   └── sac/                      # 自前実装 SAC(参照実装)
-│       ├── config.py             # ModelConfig / TrainConfig / TestConfig / replay_buffer_spec
-│       ├── network.py            # エンコーダ (make_encoder)
-│       ├── policy.py             # ReplayBuffer / Actor / Critic / SACAgent
-│       ├── train.py              # 学習スクリプト
-│       └── test.py               # 評価スクリプト
-│   # 外部モデル(NoMaD, NavDP 等)は models/<Name>/ に git clone して配置する
+│   ├── sac/                      # 自前実装 SAC(参照実装)
+│   │   ├── config.py             # TrainConfig / TestConfig / replay_buffer_spec / env_overrides
+│   │   ├── network.py            # エンコーダ (make_encoder / build_obs_pipeline)
+│   │   └── policy.py             # ReplayBuffer / Actor / Critic / SACAgent
+│   └── sac_DINOv3/                # DINOv3視覚エンコーダ版 SAC(sac/とは独立、設計は意図的に重複)
+│       ├── config.py
+│       ├── network.py
+│       ├── policy.py
+│       ├── dino_backbone.py      # 凍結DINOv3バックボーン
+│       └── transforms.py         # DINOTransform — rgb観測をdino_featへ変換するObservationTransform
+├── scripts/
+│   ├── train.py                   # 学習エントリポイント(--model {sac,sac_DINOv3})
+│   └── test.py                    # 評価エントリポイント
 ├── utils/
 │   ├── metrics.py                 # EpisodeTracker / EvalStats(SPL 計算・wandb ログ、train/test 共用)
 │   ├── rollout.py                 # evaluate() — 評価ロールアウトの唯一の実装(train/test共用)
+│   ├── train_loop.py              # train() / validation() — 学習ループ本体(scripts/train.pyが呼ぶ)
 │   ├── recorder.py                # EpisodeRecorder / make_overhead_camera — 動画収録
 │   ├── launch_sim.py              # launch_sim() — SimulationApp起動の共通処理
 │   └── convert_glb2usd.py         # glTF(.glb) → USD 変換ツール(人物アバター用)
 ├── deploy/
 │   └── deploy.py                 # 実機 policy 推論ノード (ROS2)
-├── debug/
-│   └── teleop.py                  # WASD テレオペ
-└── runs/                        # 学習ログ・チェックポイント
+└── debug/
+    └── teleop.py                  # WASD テレオペ
 ```
 
 ## 環境構築
@@ -162,7 +169,7 @@ uv run utils/convert_glb2usd.py \
 
 ### 5. ナビゲーションタスク学習
 
-学習設定は `models/sac/config.py` の `TrainConfig`(`stage`/`run_name`/`log_dir` は実験ごとに書き換える3点セット)、エンコーダ入力設定は同ファイルの `ModelConfig` で編集します
+学習設定は `models/<model>/config.py` の `TrainConfig`(`stage`/`run_name`/`log_dir` は実験ごとに書き換える3点セット)で編集します。エンコーダが受け取る観測モダリティ(RGB解像度・ゴールベクトルの有無など)は、同ファイルの `env_overrides()` が返す `EnvConfig.observations` で決まります(`envs/observations/` の登録済みterm一覧から選択)
 
 ```bash
 # 学習開始
@@ -186,7 +193,7 @@ uv run scripts/train.py --model sac_DINOv3 --headless
 
 ## テスト
 
-学習済みモデルを評価します。評価エピソード数は `models/sac/config.py` の `TestConfig` で定義します
+学習済みモデルを評価します。評価エピソード数は `models/<model>/config.py` の `TestConfig` で定義します
 
 ```bash
 # 単一ステージ(index 0)
@@ -204,9 +211,12 @@ uv run scripts/test.py --model sac_DINOv3 --checkpoint <dir> --log-dir <dir> --h
 
 | 引数 | 説明 |
 |---|---|
-| `--model` | チェックポイントパス(必須) |
+| `--model` | モデルの種類 `{sac, sac_DINOv3}`(必須) |
+| `--checkpoint` | チェックポイントのファイルまたはディレクトリ(必須、ディレクトリなら全件掃引) |
+| `--log-dir` | 結果ログ・wandbデータの出力先ディレクトリ(必須) |
 | `--stage-index` | 評価するステージのインデックス(デフォルト 0) |
 | `--num-humans` | 人物キャラの数(デフォルト 0) |
+| `--episodes` | `TestConfig.episodes_per_stage` を上書き(スモークテスト用) |
 | `--headless` | ヘッドレス実行 |
 | `--video` | 各エピソードの映像をmp4で保存する |
 | `--video-dir` | 動画の出力先ディレクトリ(デフォルト `videos`) |
@@ -265,9 +275,9 @@ uv run debug/teleop.py --vis-goal                 # スポーン(青)・ゴー�
 | 項目 | 内容 |
 |---|---|
 | シミュレータ | Isaac Sim 6.0.1 |
-| RL アルゴリズム | 自前実装 SAC (Soft Actor-Critic) |
+| RL アルゴリズム | 自前実装 SAC (Soft Actor-Critic)。視覚エンコーダは `sac`(生RGB CNN)/`sac_DINOv3`(凍結DINOv3特徴)の2種を切替可能 |
 | ロボット | Clearpath Jackal (4輪スキッドステア) |
-| 観測 | 環境は常に RGB 84×84 px・ゴールベクトル (2,) を発行。どれをエンコーダ入力に使うかは `models/sac/config.py` の `ModelConfig` で選択 |
+| 観測 | `envs/observations/` に登録されたterm(RGBカメラ・ゴールベクトル等)からモデル側が必要なものを `env_overrides()` で選択して発行させる。envは`models/`を一切importしない一方向依存 |
 | 行動 | [v_x_norm, ω_z_norm](`RobotConfig` の `wheel_base`/`v_linear_max`/`v_angular_max` を介しロボット非依存に左右輪速度へ変換) |
 | 人物の衝突回避 | ORCA(RVO2)。ロボットもagentとして登録され人物と1:1のreciprocal avoidance対象になる(`RobotConfig.footprint_radius`) |
 | 壁衝突判定 | ContactSensor (PhysX) による wall_mesh 接触検出 |

@@ -37,7 +37,7 @@ class RobotConfig(BaseModel):
     v_angular_max: float = 0.5  # 最大角速度 [rad/s]
     spawn_offset: float = 0.1  # スポーン時のz方向オフセット [m]
     rollover_threshold: float = -0.7  # 転倒判定のしきい値
-    footprint_radius: float = 0.33  # 衝突回避(CrowdController)に登録する実効半径 [m](Jackal footprint 0.508x0.430mの外接円概算)
+    footprint_radius: float = 0.35  # 衝突回避(CrowdController)に登録する実効半径 [m](Jackal footprint 0.508x0.430mの外接円概算)
 
 
 JACKAL = RobotConfig()
@@ -87,7 +87,7 @@ class EnvConfig(BaseModel):
     num_humans: int = 2
     human_controller: str = "orca"  # 衝突回避アルゴリズム。今のところ"orca"のみ実装
     human_speed_range: tuple[float, float] = (1.0, 1.5)  # 歩行速度 [m/s]
-    human_radius: float = 0.2
+    human_radius: float = 0.18
     human_collision_dist: float = 0.4  # ロボットとの距離ベース衝突判定しきい値 [m]
     human_min_goal_dist: float = 2.0  # 人物のスポーン-ゴール間の最小距離 [m] (min_goal_distと同じ役割)
     human_robot_min_spawn_dist: float = 1.0  # 人物スポーン位置とロボットスポーン位置の最小距離 [m] (1step目での衝突判定を防ぐ)

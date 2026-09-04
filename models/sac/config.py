@@ -42,6 +42,7 @@ class TrainConfig(BaseModel):
 
     # SACハイパーパラメータ
     buffer_size: int = 100_000
+    stack_size: int = 1  # rgbの遅延スタッキング枚数(ReplayBuffer参照)
     batch_size: int = 256
     gamma: float = 0.99
     tau: float = 0.005  # ターゲットネットワークの更新率

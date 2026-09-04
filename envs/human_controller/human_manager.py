@@ -454,7 +454,7 @@ def _model_usd_path() -> str:
     """人物アバターのModel.usdパス(AVATARS_DIR配下)を返す"""
     import os
 
-    out_path = os.path.join(AVATARS_DIR, "Model.usd")
+    out_path = os.path.join(AVATARS_DIR, "Debra.usd")
     if not os.path.exists(out_path):
         raise FileNotFoundError(
             f"{out_path} が見つかりません。先に変換してください: "

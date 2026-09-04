@@ -145,12 +145,15 @@ def main():
     env.reset()  # 俯瞰カメラ生成にはステージのロードが済んでいる必要がある
     action_dim = env.action_space.shape[0]
 
+    # stack_sizeは学習時のTrainConfigと一致している前提(checkpointは学習時の設定を保存しないため)
+    ref_train_cfg = mcfg.TrainConfig(stage=stage_name)
+
     # agentはstate_dictの再ロードだけで使い回せる(policy.SACAgent.load参照)ため、
     # チェックポイントごとに再構築せず、Isaac Simの起動は1度だけで済ませる。
     agent = mpol.SACAgent(
-        encoder_factory=lambda: mnet.make_encoder(model_obs_space),
+        encoder_factory=lambda: mnet.make_encoder(model_obs_space, stack_size=ref_train_cfg.stack_size),
         action_dim=action_dim,
-        cfg=mcfg.TrainConfig(stage=stage_name),
+        cfg=ref_train_cfg,
         device=DEVICE,
     )
 
@@ -186,6 +189,7 @@ def main():
                 stem_fn=lambda ep: f"{ep}",
                 desc=f"[{ckpt_path.stem}]",
                 obs_transform=obs_transform,
+                stack_size=ref_train_cfg.stack_size,
             )
 
             separator = "=" * 60

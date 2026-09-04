@@ -19,8 +19,34 @@ _LOG_STD_MAX = 2
 # ---------------------------------------------------------------------------
 
 
+_NP_TO_TORCH_DTYPE = {
+    np.dtype(np.float32): torch.float32,
+    np.dtype(np.uint8): torch.uint8,
+}
+
+
 class ReplayBuffer:
-    """観測対応のオフポリシーバッファ"""
+    """遅延スタッキング対応のオフポリシーバッファ。
+
+    1フレームだけを保存し、stack_size>1のときはsample()/encode_recent_observation()時に
+    過去フレームを遅延結合する(next_obsもobsと同じ配列をidx+1で参照するだけで複製しない)。
+    stack_size=1なら結合処理を経由せず、従来と全く同じ観測を返す。
+
+    典型的な使い方(train_loop.py参照):
+        idx = buffer.store_frame(obs)             # 1フレーム保存、行動選択用にidxを控える
+        action = agent.act(buffer.encode_recent_observation())
+        next_obs, reward, terminated, truncated, info = env.step(action)
+        buffer.store_effect(idx, action, reward, float(terminated))
+        if truncated and not terminated:
+            # Bellman targetがnext_obsを使う(done=0)ため、reset前の真の継続フレームを
+            # 行動選択とは無関係に保存しておく(store_effectは呼ばない=sample()の対象外)
+            buffer.store_frame(next_obs)
+        if terminated or truncated:
+            obs, _ = env.reset()
+            buffer.reset_episode()
+    """
+
+    _STACK_KEY = "rgb"  # このキーだけstack_size倍にスタックする
 
     def __init__(
         self,
@@ -29,69 +55,99 @@ class ReplayBuffer:
         action_dim: int,
         device: str,
         obs_dtypes: dict[str, type] | None = None,
+        stack_size: int = 1,
     ):
-        """obs_dtypesでnp.uint8を指定したキーは[0,1]のfloatとして受け取り、
-        内部ではuint8で保持してメモリを節約する(sample()で[0,1]floatへ戻す)"""
+        """obs_specは1フレームぶんの形状(スタック前)。obs_dtypesでnp.uint8を指定したキーは
+        [0,1]のfloatとして受け取り、内部ではuint8で保持してメモリを節約する"""
         self._cap = capacity
+        self._stack = stack_size
         self._ptr = 0
         self._size = 0
         self._dev = device
+        self._pin = torch.device(device).type == "cuda"
         obs_dtypes = obs_dtypes or {}
         self._obs_dtype = {k: obs_dtypes.get(k, np.float32) for k in obs_spec}
+        self._obs_spec = obs_spec
+        self._cur_episode_step = 0
 
-        self._obs = {
-            k: np.zeros((capacity, *s), dtype=self._obs_dtype[k]) for k, s in obs_spec.items()
-        }
-        self._next_obs = {
-            k: np.zeros((capacity, *s), dtype=self._obs_dtype[k]) for k, s in obs_spec.items()
-        }
-        self._actions = np.zeros((capacity, action_dim), dtype=np.float32)
-        self._rewards = np.zeros((capacity, 1), dtype=np.float32)
-        self._dones = np.zeros((capacity, 1), dtype=np.float32)
+        def _zeros(shape: tuple[int, ...], np_dtype) -> torch.Tensor:
+            torch_dtype = _NP_TO_TORCH_DTYPE[np.dtype(np_dtype)]
+            return torch.zeros(shape, dtype=torch_dtype, pin_memory=self._pin)
+
+        self._frames = {k: _zeros((capacity, *s), self._obs_dtype[k]) for k, s in obs_spec.items()}
+        self._episode_step = torch.zeros(capacity, dtype=torch.int32)
+        self._valid = torch.zeros(capacity, dtype=torch.bool)  # store_effect済みのスロットのみTrue
+        self._actions = _zeros((capacity, action_dim), np.float32)
+        self._rewards = _zeros((capacity, 1), np.float32)
+        self._dones = _zeros((capacity, 1), np.float32)
 
     def _encode(self, k: str, value: np.ndarray) -> np.ndarray:
         if self._obs_dtype[k] == np.uint8:
             return np.round(value * 255.0).astype(np.uint8)
         return value
 
-    def add(
-        self,
-        obs: dict,
-        action: np.ndarray,
-        reward: float,
-        next_obs: dict,
-        done: float,
-    ):
-        for k in self._obs:
-            self._obs[k][self._ptr] = self._encode(k, obs[k])
-            self._next_obs[k][self._ptr] = self._encode(k, next_obs[k])
-        self._actions[self._ptr] = action
-        self._rewards[self._ptr] = reward
-        self._dones[self._ptr] = done
-        self._ptr = (self._ptr + 1) % self._cap
+    def store_frame(self, obs: dict) -> int:
+        """1step分の観測(1フレーム)だけを保存し、書き込んだスロットのインデックスを返す"""
+        i = self._ptr
+        for k, arr in self._frames.items():
+            arr[i] = torch.from_numpy(np.asarray(self._encode(k, obs[k])))
+        self._episode_step[i] = self._cur_episode_step
+        self._valid[i] = False
+        self._cur_episode_step += 1
+        self._ptr = (i + 1) % self._cap
         self._size = min(self._size + 1, self._cap)
+        return i
+
+    def store_effect(self, idx: int, action, reward: float, done: float) -> None:
+        """store_frame()が返したidxへ行動・報酬・doneを書き込み、サンプル対象として有効化する"""
+        self._actions[idx] = torch.from_numpy(np.asarray(action, dtype=np.float32))
+        self._rewards[idx] = float(reward)
+        self._dones[idx] = float(done)
+        self._valid[idx] = True
+
+    def reset_episode(self) -> None:
+        """env.reset()の直後に呼ぶ。次のstore_frame()をエピソード先頭(episode_step=0)として扱う"""
+        self._cur_episode_step = 0
+
+    def _gather(self, idx: torch.Tensor) -> dict[str, torch.Tensor]:
+        """idx(各サンプルの現在フレーム位置)のスタック観測をdevice上のfloatテンソルで返す"""
+        ep = self._episode_step[idx]
+        out = {}
+        for k, frames in self._frames.items():
+            if k == self._STACK_KEY and self._stack > 1:
+                parts = []
+                for back_k in range(self._stack - 1, -1, -1):  # 古い→新しいの順に積む
+                    back = torch.minimum(torch.full_like(ep, back_k), ep)
+                    src = (idx - back) % self._cap
+                    parts.append(frames.index_select(0, src))
+                x = torch.cat(parts, dim=1)
+            else:
+                x = frames.index_select(0, idx)
+            x = x.to(self._dev, dtype=torch.float32, non_blocking=self._pin)
+            if self._obs_dtype[k] == np.uint8:
+                x = x / 255.0
+            out[k] = x
+        return out
+
+    def encode_recent_observation(self) -> dict[str, np.ndarray]:
+        """直近のstore_frame()呼び出し分のスタック観測をnumpyで返す(agent.act()用)"""
+        idx = torch.tensor([(self._ptr - 1) % self._cap])
+        return {k: v[0].cpu().numpy() for k, v in self._gather(idx).items()}
 
     def sample(self, batch_size: int):
-        idx = np.random.randint(0, self._size, size=batch_size)
+        idx = torch.randint(0, self._size, (batch_size,))
+        invalid = ~self._valid[idx]
+        while invalid.any():
+            idx[invalid] = torch.randint(0, self._size, (int(invalid.sum()),))
+            invalid = ~self._valid[idx]
 
-        def to_t(k: str, arr: np.ndarray):
-            x = arr[idx]
-            if self._obs_dtype[k] == np.uint8:
-                x = x.astype(np.float32) / 255.0
-            return torch.FloatTensor(x).to(self._dev)
+        obs = self._gather(idx)
+        next_obs = self._gather((idx + 1) % self._cap)
 
-        def to_t_plain(arr: np.ndarray):
-            return torch.FloatTensor(arr).to(self._dev)
+        def to_t_plain(t: torch.Tensor) -> torch.Tensor:
+            return t.index_select(0, idx).to(self._dev, dtype=torch.float32, non_blocking=self._pin)
 
-        obs = {k: to_t(k, self._obs[k]) for k in self._obs}
-        next_obs = {k: to_t(k, self._next_obs[k]) for k in self._next_obs}
-        return (
-            obs,
-            to_t_plain(self._actions[idx]),
-            to_t_plain(self._rewards[idx]),
-            next_obs,
-            to_t_plain(self._dones[idx]),
-        )
+        return obs, to_t_plain(self._actions), to_t_plain(self._rewards), next_obs, to_t_plain(self._dones)
 
     def __len__(self) -> int:
         return self._size

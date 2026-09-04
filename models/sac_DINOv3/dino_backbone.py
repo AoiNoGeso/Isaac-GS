@@ -47,18 +47,21 @@ class DINOBackbone:
         self._std = _STD.to(device)
 
     @torch.no_grad()
-    def extract(self, rgb: np.ndarray) -> np.ndarray:
-        """rgb: (3,H,W) float32 [0,1] の観測1枚から、パッチグリッド特徴(hidden_size, grid, grid)を返す
-        (H,WはRGBCameraCfg.resolutionでimage_sizeに合わせておくこと。前処理はここで正規化のみ行う)"""
-        x = torch.from_numpy(rgb).to(self.device, dtype=torch.float32).unsqueeze(0)
+    def extract_stack(self, rgb_stack: np.ndarray) -> np.ndarray:
+        """rgb_stack: (3*N,H,W) float32 [0,1] のNフレームスタック(N=1なら単一フレーム)から、
+        各フレームを1回のバッチforwardでまとめて処理し、チャンネル方向に結合した特徴
+        (hidden_size*N, grid, grid) を返す(H,WはRGBCameraCfg.resolutionでimage_sizeに合わせること)"""
+        c, h, w = rgb_stack.shape
+        n = c // 3
+        x = torch.from_numpy(rgb_stack).to(self.device, dtype=torch.float32).reshape(n, 3, h, w)
         x = (x - self._mean) / self._std
 
-        last_hidden = self._model(pixel_values=x).last_hidden_state  # (1, 1+reg+patches, D)
-        patch_tokens = last_hidden[:, 1 + self.num_register_tokens :, :]  # (1, patches, D)
+        last_hidden = self._model(pixel_values=x).last_hidden_state  # (n, 1+reg+patches, D)
+        patch_tokens = last_hidden[:, 1 + self.num_register_tokens :, :]  # (n, patches, D)
         patch_grid = patch_tokens.transpose(1, 2).reshape(
-            1, self.hidden_size, self.grid_size, self.grid_size
+            n, self.hidden_size, self.grid_size, self.grid_size
         )
-        return patch_grid[0].cpu().numpy()
+        return patch_grid.reshape(n * self.hidden_size, self.grid_size, self.grid_size).cpu().numpy()
 
 
 _BACKBONE: DINOBackbone | None = None

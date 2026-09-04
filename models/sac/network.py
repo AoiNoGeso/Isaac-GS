@@ -41,16 +41,19 @@ class GoalEncoder(nn.Module):
 
 
 class PointNavEncoder(nn.Module):
-    """CNNEncoderとGoalEncoderを観測空間に応じて組み合わせる統合エンコーダ"""
+    """CNNEncoderとGoalEncoderを観測空間に応じて組み合わせる統合エンコーダ
 
-    def __init__(self, observation_space: spaces.Dict):
+    stack_sizeはReplayBufferの遅延スタッキングで結合されるrgbのフレーム数
+    (observation_spaceはスタック前=1フレームぶんの形状のため、ここでin_channelsへ反映する)"""
+
+    def __init__(self, observation_space: spaces.Dict, stack_size: int = 1):
         super().__init__()
         self.keys = tuple(k for k in _KEY_ORDER if k in observation_space.spaces)
         self.out_dim = 0
         if "rgb" in self.keys:
             c, h, w = observation_space["rgb"].shape
             assert h == w, f"CNNEncoderは正方形画像のみ対応: {(h, w)}"
-            self.cnn = CNNEncoder(img_size=h, in_channels=c)
+            self.cnn = CNNEncoder(img_size=h, in_channels=c * stack_size)
             self.out_dim += self.cnn.out_dim
         if "goal" in self.keys:
             self.goal_enc = GoalEncoder(in_dim=observation_space["goal"].shape[0])
@@ -70,6 +73,6 @@ def build_obs_pipeline(env_obs_space: spaces.Dict, device: str) -> tuple[spaces.
     return env_obs_space, None
 
 
-def make_encoder(observation_space: spaces.Dict) -> PointNavEncoder:
+def make_encoder(observation_space: spaces.Dict, stack_size: int = 1) -> PointNavEncoder:
     """train/test/deployで共通のエンコーダ生成関数"""
-    return PointNavEncoder(observation_space)
+    return PointNavEncoder(observation_space, stack_size=stack_size)
