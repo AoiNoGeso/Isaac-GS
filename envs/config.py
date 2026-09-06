@@ -84,7 +84,7 @@ class EnvConfig(BaseModel):
     fixed_spawn_yaw_deg: float | None = None
 
     # 人物キャラ (num_humans=0でPointNavigationのみ, envs/human_controller/参照)
-    num_humans: int = 2
+    num_humans: int = 0
     human_controller: str = "orca"  # 衝突回避アルゴリズム。今のところ"orca"のみ実装
     human_speed_range: tuple[float, float] = (1.0, 1.5)  # 歩行速度 [m/s]
     human_radius: float = 0.18

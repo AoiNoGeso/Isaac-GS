@@ -40,8 +40,8 @@ class TrainConfig(BaseModel):
     stage: str  # 学習対象ステージ名(必須)
     total_timesteps: int = 300_000
     project_name: str | None = "Isaac-GS"
-    run_name: str | None = "S2-RGB+G_corridor2_0904_5stack"
-    log_dir: str = "runs_forSI/corridor2/S2-RGB+G/0904_5stack"
+    run_name: str | None = "S0-RGB+G_corridor2_0906_5stack"
+    log_dir: str = "runs_forSI/corridor2/S0-RGB+G/0906_5stack"
     log_interval: int = 1_000
     checkpoint_interval: int = 50_000
     val_interval: int = 50_000  # 何stepごとにバリデーションを実行するか

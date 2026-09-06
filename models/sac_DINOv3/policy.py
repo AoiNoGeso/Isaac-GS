@@ -33,9 +33,11 @@ class ReplayBuffer:
     過去フレームを遅延結合する(next_obsもobsと同じ配列をidx+1で参照するだけで複製しない)。
     stack_size=1なら結合処理を経由せず、従来と全く同じ観測を返す。
 
-    バッファ本体はpinned(ページロック)CPUメモリ上のtorch.Tensorとして確保し、sample()時に
-    .to(device, non_blocking=True)で転送する(tests/buffer_style_test.py参照。従来のnumpy配列
-    +torch.FloatTensor(x).to(device)方式よりsample()が高速)。
+    バッファ本体はdevice(GPU)常駐のtorch.Tensorとして確保する。実測の結果、CPU上の
+    index_select(pinned/pageable問わず)は大きな特徴マップのgatherが遅く(stack_size=5で
+    1回あたり約24ms×stack_size×2(obs/next_obs)がsample()を支配していた)、GPU常駐にすると
+    同じgatherが約180倍高速化した(0.2ms/回)。1フレームぶんの容量は数GB程度でVRAMに十分収まる
+    (stack_sizeを増やしても保存は1フレームぶんのままなのでVRAM使用量は変化しない)。
 
     典型的な使い方(train_loop.py参照):
         idx = buffer.store_frame(obs)             # 1フレーム保存、行動選択用にidxを控える
@@ -68,8 +70,7 @@ class ReplayBuffer:
         self._stack = stack_size
         self._ptr = 0
         self._size = 0
-        self._dev = device
-        self._pin = torch.device(device).type == "cuda"
+        self._dev = torch.device(device)
         obs_dtypes = obs_dtypes or {}
         self._obs_dtype = {k: obs_dtypes.get(k, np.float32) for k in obs_spec}
         self._obs_spec = obs_spec
@@ -77,11 +78,11 @@ class ReplayBuffer:
 
         def _zeros(shape: tuple[int, ...], np_dtype) -> torch.Tensor:
             torch_dtype = _NP_TO_TORCH_DTYPE[np.dtype(np_dtype)]
-            return torch.zeros(shape, dtype=torch_dtype, pin_memory=self._pin)
+            return torch.zeros(shape, dtype=torch_dtype, device=self._dev)
 
         self._frames = {k: _zeros((capacity, *s), self._obs_dtype[k]) for k, s in obs_spec.items()}
-        self._episode_step = torch.zeros(capacity, dtype=torch.int32)
-        self._valid = torch.zeros(capacity, dtype=torch.bool)  # store_effect済みのスロットのみTrue
+        self._episode_step = torch.zeros(capacity, dtype=torch.int32, device=self._dev)
+        self._valid = torch.zeros(capacity, dtype=torch.bool, device=self._dev)  # store_effect済みのみTrue
         self._actions = _zeros((capacity, action_dim), np.float32)
         self._rewards = _zeros((capacity, 1), np.float32)
         self._dones = _zeros((capacity, 1), np.float32)
@@ -95,7 +96,7 @@ class ReplayBuffer:
         """1step分の観測(1フレーム)だけを保存し、書き込んだスロットのインデックスを返す"""
         i = self._ptr
         for k, arr in self._frames.items():
-            arr[i] = torch.from_numpy(np.asarray(self._encode(k, obs[k])))
+            arr[i] = torch.from_numpy(np.asarray(self._encode(k, obs[k]))).to(self._dev)
         self._episode_step[i] = self._cur_episode_step
         self._valid[i] = False
         self._cur_episode_step += 1
@@ -105,7 +106,7 @@ class ReplayBuffer:
 
     def store_effect(self, idx: int, action, reward: float, done: float) -> None:
         """store_frame()が返したidxへ行動・報酬・doneを書き込み、サンプル対象として有効化する"""
-        self._actions[idx] = torch.from_numpy(np.asarray(action, dtype=np.float32))
+        self._actions[idx] = torch.as_tensor(action, dtype=torch.float32, device=self._dev)
         self._rewards[idx] = float(reward)
         self._dones[idx] = float(done)
         self._valid[idx] = True
@@ -116,7 +117,8 @@ class ReplayBuffer:
 
     def _gather(self, idx: torch.Tensor) -> dict[str, torch.Tensor]:
         """idx(各サンプルの現在フレーム位置)のスタック観測をdevice上のfloatテンソルで返す"""
-        ep = self._episode_step[idx]
+        idx = idx.to(self._dev)
+        ep = self._episode_step.index_select(0, idx)
         out = {}
         for k, frames in self._frames.items():
             if k == self._STACK_KEY and self._stack > 1:
@@ -128,7 +130,7 @@ class ReplayBuffer:
                 x = torch.cat(parts, dim=1)
             else:
                 x = frames.index_select(0, idx)
-            x = x.to(self._dev, dtype=torch.float32, non_blocking=self._pin)
+            x = x.float()
             if self._obs_dtype[k] == np.uint8:
                 x = x / 255.0
             out[k] = x
@@ -136,21 +138,22 @@ class ReplayBuffer:
 
     def encode_recent_observation(self) -> dict[str, np.ndarray]:
         """直近のstore_frame()呼び出し分のスタック観測をnumpyで返す(agent.act()用)"""
-        idx = torch.tensor([(self._ptr - 1) % self._cap])
+        idx = torch.tensor([(self._ptr - 1) % self._cap], device=self._dev)
         return {k: v[0].cpu().numpy() for k, v in self._gather(idx).items()}
 
     def sample(self, batch_size: int):
-        idx = torch.randint(0, self._size, (batch_size,))
-        invalid = ~self._valid[idx]
+        idx = torch.randint(0, self._size, (batch_size,), device=self._dev)
+        invalid = ~self._valid.index_select(0, idx)
         while invalid.any():
-            idx[invalid] = torch.randint(0, self._size, (int(invalid.sum()),))
-            invalid = ~self._valid[idx]
+            n_bad = int(invalid.sum())
+            idx[invalid] = torch.randint(0, self._size, (n_bad,), device=self._dev)
+            invalid = ~self._valid.index_select(0, idx)
 
         obs = self._gather(idx)
         next_obs = self._gather((idx + 1) % self._cap)
 
         def to_t_plain(t: torch.Tensor) -> torch.Tensor:
-            return t.index_select(0, idx).to(self._dev, dtype=torch.float32, non_blocking=self._pin)
+            return t.index_select(0, idx).float()
 
         return obs, to_t_plain(self._actions), to_t_plain(self._rewards), next_obs, to_t_plain(self._dones)
 
