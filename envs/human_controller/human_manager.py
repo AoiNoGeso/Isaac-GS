@@ -273,7 +273,7 @@ class HumanManager:
 
     def _build_avatar_usd(self, stage, index: int, spawn_xyz: tuple[float, float, float]):
         """1体分のUSD Skeletonを`HUMANS_ROOT`配下に用意する"""
-        from pxr import Gf, UsdSkel, UsdGeom
+        from pxr import Gf, Usd, UsdSkel, UsdGeom
 
         from stage_generation.coords import rotation_quat
 
@@ -290,13 +290,38 @@ class HumanManager:
         ref_prim = stage.DefinePrim(f"{path}/Model")
         ref_prim.GetReferences().AddReference(_model_usd_path(), "/World")
 
+        # convert_glb2usd.pyの出力構造は、元glbのノード構成により"Model/Armature/Hips/Skeleton"の
+        # 場合と"Model/Hips/Skeleton"(Armatureラッパー無し)の場合があるため両方に対応する
+        # (tests/rerigging/visual_check_isaacsim.pyで先に確認済みのフォールバックと同じ)。
+        # glTF由来のY-up->Z-up軸変換(orient)は、Armatureがある場合はArmature自身に、
+        # 無い場合は参照元の"/World"がそのまま{path}/Model自身へ継承されるため、
+        # 軸変換を打ち消す対象もそれに合わせて切り替える(avatar_prim側で別途
+        # rotation_quat("Y")による補正を掛けているため、ここで二重に回転させない)
         armature_prim = stage.GetPrimAtPath(f"{path}/Model/Armature")
-        for op in UsdGeom.Xformable(armature_prim).GetOrderedXformOps():
+        if armature_prim.IsValid():
+            neutralize_target = armature_prim
+            skel_root_prim = stage.GetPrimAtPath(f"{path}/Model/Armature/Hips")
+        else:
+            neutralize_target = ref_prim
+            skel_root_prim = stage.GetPrimAtPath(f"{path}/Model/Hips")
+
+        for op in UsdGeom.Xformable(neutralize_target).GetOrderedXformOps():
             if op.GetOpName() == "xformOp:orient":
                 op.Set(Gf.Quatf(1, 0, 0, 0))  # glTF由来の軸変換を中立化
 
-        skel_root_prim = stage.GetPrimAtPath(f"{path}/Model/Armature/Hips")
-        skel_prim = stage.GetPrimAtPath(f"{path}/Model/Armature/Hips/Skeleton")
+        if not skel_root_prim.IsValid():
+            raise RuntimeError(
+                f"{path}/Model 配下にHips(SkelRoot)が見つかりません。"
+                f"参照元USDの構造(Model/Armature/Hipsおよび Model/Hips)を確認してください。"
+            )
+
+        skel_prim = None
+        for p in Usd.PrimRange(skel_root_prim):
+            if p.GetTypeName() == "Skeleton":
+                skel_prim = p
+                break
+        if skel_prim is None:
+            raise RuntimeError(f"{skel_root_prim.GetPath()} 配下にSkeletonが見つかりません。")
         skel = UsdSkel.Skeleton(skel_prim)
         joint_tokens = list(skel.GetJointsAttr().Get())
         leaf_to_idx = {str(j).split("/")[-1]: idx for idx, j in enumerate(joint_tokens)}
@@ -454,7 +479,7 @@ def _model_usd_path() -> str:
     """人物アバターのModel.usdパス(AVATARS_DIR配下)を返す"""
     import os
 
-    out_path = os.path.join(AVATARS_DIR, "Debra.usd")
+    out_path = os.path.join(AVATARS_DIR, "Model.usd")
     if not os.path.exists(out_path):
         raise FileNotFoundError(
             f"{out_path} が見つかりません。先に変換してください: "
