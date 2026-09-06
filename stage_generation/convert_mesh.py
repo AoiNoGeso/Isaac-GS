@@ -1,31 +1,20 @@
-import argparse
+"""omni.kit.asset_converter によるメッシュ変換 + source_up_axis -> Z-up 回転焼き込み"""
+
 import asyncio
-import os
-
-import numpy as np
-from isaacsim import SimulationApp
 
 
-def main():
-    # 引数の設定
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "-i", "--input", required=True, help="Input mesh file path (PLY, OBJ, etc.)"
-    )
-    parser.add_argument(
-        "-o",
-        "--output",
-        required=True,
-        help="Output USD file path (e.g. floor_mesh.usd)",
-    )
-    args = parser.parse_args()
-
-    # SimulationAppの起動
+def run(input: str, output: str, source_up_axis: str = "Y"):
     print("Starting SimulationApp...")
+    from isaacsim import SimulationApp
+
     app = SimulationApp({"headless": True})
 
-    # Isaac Simの仕様上，omni関連はSimulationApp起動後にインポートする必要があります
+    # omni関連はSimulationApp起動後でないとインポートできない
+    import numpy as np
     import omni.kit.asset_converter as ac
+    from pxr import Gf, Usd, UsdGeom, Vt
+
+    from stage_generation.coords import apply_matrix_to_vec3_array, compute_extent, rotation_matrix
 
     async def convert(input_path, output_path):
         ctx = ac.AssetConverterContext()
@@ -40,14 +29,11 @@ def main():
         else:
             print("Done:", output_path)
 
-    print(f"Converting: {args.input} -> {args.output}")
-    asyncio.get_event_loop().run_until_complete(convert(args.input, args.output))
+    print(f"Converting: {input} -> {output}")
+    asyncio.get_event_loop().run_until_complete(convert(input, output))
 
-    # -Y-up → Z-up: 全 Mesh prim の頂点・法線に -90°X 回転を直接焼き込む
-    # (x, y, z) → (x, z, -y)
-    from pxr import Gf, Usd, UsdGeom, Vt
-    R = np.array([[1, 0, 0], [0, 0, 1], [0, -1, 0]], dtype=np.float64)
-    stage = Usd.Stage.Open(args.output)
+    R = rotation_matrix(source_up_axis)
+    stage = Usd.Stage.Open(output)
     count = 0
     for prim in Usd.PrimRange(stage.GetPseudoRoot()):
         if prim.GetTypeName() != "Mesh":
@@ -55,22 +41,17 @@ def main():
         mesh = UsdGeom.Mesh(prim)
         pts = mesh.GetPointsAttr().Get()
         if pts:
-            pts_np = (R @ np.array(pts).T).T
+            pts_np = apply_matrix_to_vec3_array(np.array(pts), R)
             mesh.GetPointsAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*p) for p in pts_np]))
-            # BBoxCache は extent を優先するため points と合わせて更新する
-            new_min = pts_np.min(axis=0)
-            new_max = pts_np.max(axis=0)
+            # BBoxCacheはextentを優先するためpointsと合わせて更新する
+            new_min, new_max = compute_extent(pts_np)
             mesh.GetExtentAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*new_min), Gf.Vec3f(*new_max)]))
         nrm = mesh.GetNormalsAttr().Get()
         if nrm:
-            nrm_np = (R @ np.array(nrm).T).T
+            nrm_np = apply_matrix_to_vec3_array(np.array(nrm), R)
             mesh.GetNormalsAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*n) for n in nrm_np]))
         count += 1
     stage.GetRootLayer().Save()
-    print(f"Applied -90°X rotation to {count} mesh prim(s) (Z-up correction)")
+    print(f"Applied {source_up_axis}-up -> Z-up rotation to {count} mesh prim(s)")
 
     app.close()
-
-
-if __name__ == "__main__":
-    main()

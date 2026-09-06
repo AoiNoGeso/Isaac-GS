@@ -1,0 +1,22 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# assets
+assets/stages/*
+!assets/stages/PUT_YOUR_STAGE_HERE
+
+assets/avatars/*
+!assets/avatars/PUT_YOUR_AVATAR_HERE
+
+docs/
+wandb/
+runs*/
+tests/

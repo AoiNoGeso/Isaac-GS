@@ -1,42 +1,101 @@
 """
-WASD テレオペスクリプト — 衝突判定デバッグ用
+デバッグ用テレオペスクリプト
 
-W/S: 前進/後退  A/D: 左回転/右回転  P: 座標表示  Q: 終了
+W/S: 前進/後退  A/D: 左回転/右回転  P: 座標表示  R: リセット  Q: 終了
+
+--num-humans > 0 の場合は人間アバター(ORCA + ai4animationpy, envs/human_controller/)を注入する
 
 実行:
   cd ~/Programs/Isaac-GS
   uv run debug/teleop.py
+  uv run debug/teleop.py --num-humans 2
+  uv run debug/teleop.py --stage corridor1
 """
 
+import argparse
 import sys
 from pathlib import Path
 
-from isaacsim import SimulationApp
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from envs.config import stage_names
 
-app = SimulationApp({"headless": False})
-
-import omni.log
-
-omni.log.get_log().set_channel_level(
-    "omni.physx.plugin", omni.log.Level.ERROR, omni.log.SettingBehavior.OVERRIDE
+parser = argparse.ArgumentParser()
+parser.add_argument("--num-humans", type=int, default=0)
+parser.add_argument("--headless", action="store_true", default=False)
+parser.add_argument(
+    "--stage", type=str, choices=stage_names(), default="corridor2"
 )
+parser.add_argument(
+    "--vis-goal", action="store_true", default=False, help="スポーン(青)・ゴール(赤)地点に半透明の円を表示"
+)
+parser.add_argument(
+    "--reset",
+    action="store_true",
+    default=False,
+    help="衝突/成功/タイムアウトで自動リセットする (指定しない場合は R キーのみで手動リセット)",
+)
+args = parser.parse_args()
+
+from utils.launch_sim import launch_sim
+
+app = launch_sim(headless=args.headless)
 
 import carb
 import numpy as np
 import omni.appwindow
+import omni.usd
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from envs import PointNavIsaacEnv
+from envs.config import EnvConfig
 
-from envs.isaac_env import _V_ANGULAR_MAX, _V_LINEAR_MAX, PointNavIsaacEnv
-from tasks.point_navigation.config import PointNavEnvCfg
+MARKER_RADIUS = 0.3  # m
+MARKER_HEIGHT = 0.02  # m, xy平面に対して十分薄い円盤
+
+
+def _make_marker(stage, path: str, color: tuple[float, float, float]):
+    from pxr import Gf, UsdGeom
+
+    cyl = UsdGeom.Cylinder.Define(stage, path)
+    cyl.CreateAxisAttr("Z")
+    cyl.CreateRadiusAttr(MARKER_RADIUS)
+    cyl.CreateHeightAttr(MARKER_HEIGHT)
+    cyl.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+    cyl.CreateDisplayOpacityAttr([0.4])
+    prim = cyl.GetPrim()
+    UsdGeom.Imageable(prim).MakeVisible()
+    UsdGeom.Xformable(prim).AddTranslateOp()
+    return prim
+
+
+def _update_marker(prim, pos):
+    from pxr import Gf
+
+    prim.GetAttribute("xformOp:translate").Set(
+        Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2]))
+    )
 
 
 def main():
-    cfg = PointNavEnvCfg()
-    cfg.fixed_spawn_pos = (0.9, -0.19, -2.6)
-    cfg.fixed_goal_pos = (-3.0, 1.6, -2.6)
-    env = PointNavIsaacEnv(cfg)
+    env_cfg = EnvConfig.from_preset(
+        args.stage,
+        num_humans=args.num_humans,
+        human_speed_range=(0.8, 1.5),
+    )
+    env = PointNavIsaacEnv(env_cfg)
     env.reset()
+
+    spawn_marker = goal_marker = None
+    if args.vis_goal:
+        stage = omni.usd.get_context().get_stage()
+        spawn_marker = _make_marker(stage, "/World/DebugVis/SpawnMarker", (0.2, 0.4, 1.0))
+        goal_marker = _make_marker(stage, "/World/DebugVis/GoalMarker", (1.0, 0.2, 0.2))
+
+    def refresh_markers():
+        if args.vis_goal:
+            _update_marker(spawn_marker, env.robot_pos)
+            _update_marker(goal_marker, env.goal_pos)
+
+    refresh_markers()
 
     input_iface = carb.input.acquire_input_interface()
     keyboard = omni.appwindow.get_default_app_window().get_keyboard()
@@ -50,17 +109,31 @@ def main():
         return True
 
     input_iface.subscribe_to_keyboard_events(keyboard, on_key)
-    print("[Teleop] W/S=前後  A/D=回転  P=座標表示  Q=終了")
+    print("[Teleop] W/S=前後  A/D=回転  P=座標表示  R=リセット  Q=終了")
+    if args.num_humans > 0:
+        print(f"[Teleop] 人物 {args.num_humans} 体, 接触センサーで衝突検知")
 
     step = 0
+    prev_human_collision = False
+    collision_count = 0
     while app.is_running():
         if carb.input.KeyboardInput.Q in keys_pressed:
             print("\n[Teleop] 終了")
             break
 
+        if carb.input.KeyboardInput.R in keys_pressed:
+            env.reset()
+            refresh_markers()
+            keys_pressed.discard(carb.input.KeyboardInput.R)
+            step = 0
+            prev_human_collision = False
+            print("\n[Teleop] リセット")
+
         if carb.input.KeyboardInput.P in keys_pressed:
-            p = env._get_robot_pos()
-            print(f"\n[Pos] ({p[0]:.4f}, {p[1]:.4f}, {p[2]:.4f})")
+            p = env.robot_pos
+            print(f"\n[Pos] robot=({p[0]:.4f}, {p[1]:.4f}, {p[2]:.4f})")
+            for i, (hx, hy) in enumerate(env.human_positions_xy):
+                print(f"      Human{i}=({hx:.2f}, {hy:.2f})")
 
         v_x = (
             1.0
@@ -68,48 +141,79 @@ def main():
             else -1.0
             if carb.input.KeyboardInput.S in keys_pressed
             else 0.0
-        ) * _V_LINEAR_MAX
+        )
         omega = (
             1.0
             if carb.input.KeyboardInput.A in keys_pressed
             else -1.0
             if carb.input.KeyboardInput.D in keys_pressed
             else 0.0
-        ) * _V_ANGULAR_MAX
+        )
 
         obs, reward, terminated, truncated, info = env.step(
-            np.array([v_x / _V_LINEAR_MAX, omega / _V_ANGULAR_MAX], dtype=np.float32)
+            np.array([v_x, omega], dtype=np.float32)
         )
 
-        pos = env._get_robot_pos()
-        goal = env._goal_pos
-        dist_xy = float(np.linalg.norm(goal[[0, 1]] - pos[[0, 1]]))
-        goal_vec = env._compute_goal_vec()
-        angle_rel_deg = float(goal_vec[1]) * 180.0
-        w, qx, qy, qz = env._get_robot_quat()
-        yaw_deg = float(
-            np.degrees(
-                np.arctan2(2.0 * (w * qz + qx * qy), 1.0 - 2.0 * (qy**2 + qz**2))
+        pos = env.robot_pos
+
+        if args.num_humans > 0:
+            dists = [
+                float(np.hypot(hx - pos[0], hy - pos[1])) for hx, hy in env.human_positions_xy
+            ]
+            nearest_str = f"{min(dists):.2f}m" if dists else "N/A"
+
+            human_collision = bool(info.get("human_collision", False))
+            wall = bool(info.get("collision", False)) and not human_collision
+
+            # 衝突検知の瞬間だけ警告を出す(以後は流れて消える通常ログのみ)
+            if human_collision and not prev_human_collision:
+                collision_count += 1
+                print(
+                    f"\n⚠️ : ロボットが人と衝突しました！ "
+                    f"(#{collision_count}  step={step}  nearest_human={nearest_str})"
+                )
+            prev_human_collision = human_collision
+
+            print(
+                "\x1b[K"
+                f"[step {step:5d}] "
+                f"robot=({pos[0]:.2f},{pos[1]:.2f})  "
+                f"nearest_human={nearest_str}  "
+                f"HUMAN_COLLISION={'YES' if human_collision else 'no '}  "
+                f"wall={'YES' if wall else 'no '}",
+                end="\r",
             )
-        )
-        print(
-            f"[step {step:4d}] "
-            f"pos=({pos[0]:.2f},{pos[1]:.2f})  "
-            f"yaw={yaw_deg:+.1f}deg  "
-            f"angle_rel={angle_rel_deg:+.1f}deg  "
-            f"dist_xy={dist_xy:.2f}m  "
-            f"collision={int(info.get('collision', False))}",
-            end="\r",
-        )
+        else:
+            goal = env.goal_pos
+            dist_xy = float(np.linalg.norm(goal[[0, 1]] - pos[[0, 1]]))
+            angle_rel_deg = float(env.goal_vec[1]) * 180.0
+            w, qx, qy, qz = env.robot_quat
+            yaw_deg = float(
+                np.degrees(
+                    np.arctan2(2.0 * (w * qz + qx * qy), 1.0 - 2.0 * (qy**2 + qz**2))
+                )
+            )
+            print(
+                "\x1b[K"
+                f"[step {step:4d}] "
+                f"pos=({pos[0]:.2f},{pos[1]:.2f})  "
+                f"yaw={yaw_deg:+.1f}deg  "
+                f"angle_rel={angle_rel_deg:+.1f}deg  "
+                f"dist_xy={dist_xy:.2f}m  "
+                f"collision={int(info.get('collision', False))}",
+                end="\r",
+            )
 
-        if terminated or truncated:
+        if (terminated or truncated) and args.reset:
             print()
             print(f"[Teleop] episode end — {info}")
             env.reset()
+            refresh_markers()
             step = 0
         else:
             step += 1
 
+    env.close()
     app.close()
 
 

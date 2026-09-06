@@ -1,0 +1,2 @@
+assets/ai4animation/*.glb filter=lfs diff=lfs merge=lfs -text
+assets/ai4animation/*.pt filter=lfs diff=lfs merge=lfs -text

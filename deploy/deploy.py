@@ -1,30 +1,7 @@
-"""
-Point Navigation デプロイスクリプト（ROS2 policy ノード）
-
-sim_ros2_bridge.py（または実機ドライバ）と組み合わせて使用する。
-RViz2 で '2D Goal Pose' を指定することでゴールを設定できる。
-
-ロボット位置は TF の map→base_link から取得する（SLAM の自己位置推定を使用）。
-ゴール座標は /goal_pose（map フレーム）をそのまま使用するため座標変換不要。
-
-購読トピック:
-  /camera/camera/color/image_raw   sensor_msgs/Image
-  /goal_pose                geometry_msgs/PoseStamped
-
-TF 参照:
-  map → base_footprint      SLAM が配信する自己位置推定
-
-発行トピック:
-  /cmd_vel                  geometry_msgs/Twist
-
-実行方法:
-  # 別ターミナルで sim_ros2_bridge.py を起動してから:
-  python3 deploy/deploy.py --model runs/point_nav/sac_final
-  python3 deploy/deploy.py --model runs/point_nav/checkpoints/sac_10000_steps
-"""
+"""Point Navigation 実機デプロイ用ROS2ノード。
+実行例: python3 deploy/deploy.py --model runs/point_nav/sac_final.pt"""
 
 import argparse
-import math
 import sys
 import threading
 from pathlib import Path
@@ -38,16 +15,17 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image
 from tf2_ros import Buffer, TransformListener
 
-from tasks.point_navigation.policy.policy import SACAgent
+from envs.config import JACKAL, EnvConfig
+from envs.geometry import goal_vec, quat_to_yaw
+from envs.observations import RGBCameraCfg
+from models.sac.policy import SACAgent
 
-# -------------------------------------------------------------------
-# 定数（シミュレータの isaac_env.py と合わせること）
-# -------------------------------------------------------------------
-
-_IMG_SIZE = 84
-_V_MAX = 0.3  # [m/s]  実機に合わせて調整
-_W_MAX = 1.0  # [rad/s] 実機に合わせて調整
-_GOAL_THRESHOLD = 0.4  # [m]
+# 学習時と推論時で条件がずれないよう、既定値はすべてシミュレータ側の設定から引く
+_ENV_DEFAULTS = EnvConfig.model_fields
+_IMG_SIZE = RGBCameraCfg().resolution[0]  # 入力画像の一辺 [px]
+_GOAL_THRESHOLD = _ENV_DEFAULTS["goal_threshold"].default  # ゴール到達判定の距離 [m]
+_V_MAX = JACKAL.v_linear_max  # 最大直進速度 [m/s]
+_W_MAX = JACKAL.v_angular_max  # 最大角速度 [rad/s]
 
 
 def _parse_args():
@@ -57,48 +35,16 @@ def _parse_args():
     p.add_argument("--w-max", type=float, default=_W_MAX)
     p.add_argument("--goal-threshold", type=float, default=_GOAL_THRESHOLD)
     p.add_argument("--hz", type=float, default=10.0, help="制御周期 [Hz]")
-    p.add_argument("--input-goal", action="store_true", default=False,
-                   help="ゴールベクトルを観測に含める（RGB+Goalモデル用）")
+    p.add_argument(
+        "--input-goal",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="ゴールベクトルを観測に含める（RGB+Goalモデル用）。--no-input-goal で無効化",
+    )
     return p.parse_args()
 
 
-# -------------------------------------------------------------------
-# ゴールベクトル計算（isaac_env.py の _compute_goal_vec と同一ロジック）
-# -------------------------------------------------------------------
-
-
-def _compute_goal_vec(
-    robot_x: float,
-    robot_y: float,
-    robot_yaw: float,
-    goal_x: float,
-    goal_y: float,
-) -> np.ndarray:
-    """
-    ロボット位置・向き・ゴール位置から policy への入力ベクトルを計算する。
-
-    ROS2・シミュレータ共通（Z-up, ロボット前方=+X）の計算式:
-      angle_rel = (arctan2(dy, dx) - yaw + π) % (2π) - π
-
-    Returns:
-        np.ndarray shape (2,): [dist_m, angle_norm]
-          dist_m     = ゴールまでの距離 [m]（正規化なし）
-          angle_norm = angle_rel / π  ∈ [-1, 1]
-    """
-    dx = goal_x - robot_x
-    dy = goal_y - robot_y
-    dist = math.sqrt(dx**2 + dy**2)
-    angle_rel = (math.atan2(dy, dx) - robot_yaw + math.pi) % (2 * math.pi) - math.pi
-    return np.array([dist, angle_rel / math.pi], dtype=np.float32)
-
-
-def _quat_to_yaw(x: float, y: float, z: float, w: float) -> float:
-    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
-
-
-# -------------------------------------------------------------------
 # ROS2 ノード
-# -------------------------------------------------------------------
 
 
 class PointNavDeployNode(Node):
@@ -111,27 +57,21 @@ class PointNavDeployNode(Node):
         self._input_goal = input_goal
         self._lock = threading.Lock()
 
-        # TF バッファ（map→base_footprint の自己位置推定を参照）
+        # map→base_footprint の自己位置推定をTFから取得する
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
 
-        # 状態変数
         self._rgb: np.ndarray | None = None  # (3, 84, 84) float32 [0,1]
         self._robot_x: float = 0.0
         self._robot_y: float = 0.0
         self._robot_yaw: float = 0.0
-        self._goal: tuple[float, float] | None = None  # (x, y) in map frame
+        self._goal: tuple[float, float] | None = None  # mapフレームでの(x, y)
 
-        # サブスクライバ
         self.create_subscription(
             Image, "/camera/camera/color/image_raw", self._cb_image, 1
         )
         self.create_subscription(PoseStamped, "/goal_pose", self._cb_goal, 1)
-
-        # パブリッシャ
         self._pub_cmd = self.create_publisher(Twist, "/cmd_vel", 1)
-
-        # 制御タイマー
         self.create_timer(1.0 / args.hz, self._cb_control)
 
         self.get_logger().info(f"モデルロード完了: {args.model}")
@@ -139,17 +79,16 @@ class PointNavDeployNode(Node):
             "'/goal_pose' トピックでゴールを指定してください (RViz2 '2D Goal Pose')"
         )
 
-    # ── コールバック ────────────────────────────────────────────────
+    # コールバック
 
     def _cb_image(self, msg: Image):
-        """カメラ画像を受信して前処理する"""
+        """カメラ画像を受信し RGB に変換, リサイズする"""
         try:
-            # sensor_msgs/Image → numpy (H, W, C)
             dtype = np.uint8
             raw = np.frombuffer(msg.data, dtype=dtype).reshape(
                 msg.height, msg.width, -1
             )
-            # encoding に応じて RGB に変換
+            # encodingに応じてRGB順へ変換
             if msg.encoding in ("rgb8",):
                 rgb = raw[..., :3]
             elif msg.encoding in ("bgr8",):
@@ -160,19 +99,18 @@ class PointNavDeployNode(Node):
                 rgb = raw[..., 2::-1]
             else:
                 rgb = raw[..., :3]
-            # 84×84 にリサイズ（NumPy のみ、バイリニア近似）
             if rgb.shape[0] != _IMG_SIZE or rgb.shape[1] != _IMG_SIZE:
                 from PIL import Image as PILImage
 
                 rgb = np.array(PILImage.fromarray(rgb).resize((_IMG_SIZE, _IMG_SIZE)))
-            arr = (rgb.astype(np.float32) / 255.0).transpose(2, 0, 1)  # (3,84,84)
+            arr = (rgb.astype(np.float32) / 255.0).transpose(2, 0, 1)
             with self._lock:
                 self._rgb = arr
         except Exception as e:
             self.get_logger().warn(f"画像受信エラー: {e}")
 
     def _update_pose_from_tf(self):
-        """TF の map→base_link からロボット位置・向きを更新する"""
+        """TF の map→base_footprint からロボット位置・向きを更新する"""
         try:
             tf = self._tf_buffer.lookup_transform(
                 "map", "base_footprint", rclpy.time.Time()
@@ -182,9 +120,9 @@ class PointNavDeployNode(Node):
             with self._lock:
                 self._robot_x = t.x
                 self._robot_y = t.y
-                self._robot_yaw = _quat_to_yaw(q.x, q.y, q.z, q.w)
+                self._robot_yaw = quat_to_yaw(q.w, q.x, q.y, q.z)
         except Exception:
-            pass  # TF がまだ利用できない場合は前回値を保持
+            pass  # TFが未取得の間は前回値を保持
 
     def _cb_goal(self, msg: PoseStamped):
         """RViz2 からゴール位置を受信する"""
@@ -194,7 +132,7 @@ class PointNavDeployNode(Node):
             self._goal = (x, y)
         self.get_logger().info(f"ゴール設定: ({x:.2f}, {y:.2f})")
 
-    # ── 制御ループ ─────────────────────────────────────────────────
+    # 制御ループ
 
     def _cb_control(self):
         """制御周期ごとに policy 推論を行い cmd_vel を発行する"""
@@ -204,15 +142,13 @@ class PointNavDeployNode(Node):
             robot_x, robot_y, robot_yaw = self._robot_x, self._robot_y, self._robot_yaw
             goal = self._goal
 
-        # ゴール未設定 or 画像未受信 → 停止
         if goal is None or rgb is None:
             self._publish_stop()
             return
 
         goal_x, goal_y = goal
 
-        # ゴール到達判定
-        dist = math.sqrt((goal_x - robot_x) ** 2 + (goal_y - robot_y) ** 2)
+        dist = float(np.hypot(goal_x - robot_x, goal_y - robot_y))
         if dist < self._goal_threshold:
             self.get_logger().info(f"ゴール到達！ dist={dist:.2f}m")
             self._publish_stop()
@@ -220,18 +156,15 @@ class PointNavDeployNode(Node):
                 self._goal = None
             return
 
-        # ゴールベクトル計算
-        goal_vec = _compute_goal_vec(robot_x, robot_y, robot_yaw, goal_x, goal_y)
+        gvec = goal_vec(robot_x, robot_y, robot_yaw, goal_x, goal_y)
 
-        # policy 推論（input_goal=False の場合は "goal" キーを含めない）
         obs = {"rgb": rgb}
         if self._input_goal:
-            obs["goal"] = goal_vec
+            obs["goal"] = gvec
         action = self._model.act(obs, deterministic=True)
         v_x_norm = float(np.clip(action[0], -1.0, 1.0))
         w_norm = float(np.clip(action[1], -1.0, 1.0))
 
-        # スケール変換 → cmd_vel 発行
         cmd = Twist()
         cmd.linear.x = v_x_norm * self._v_max
         cmd.angular.z = w_norm * self._w_max
@@ -241,33 +174,36 @@ class PointNavDeployNode(Node):
         self._pub_cmd.publish(Twist())
 
 
-# -------------------------------------------------------------------
 # エントリポイント
-# -------------------------------------------------------------------
 
 
 def main():
     args = _parse_args()
 
     import torch
+    from gymnasium import spaces
 
-    from tasks.point_navigation.config import PointNavEnvCfg, SACCfg
-    from tasks.point_navigation.policy.network import PointNavEncoder
+    from models.sac.config import TrainConfig
+    from models.sac.network import build_obs_pipeline, make_encoder
 
     input_goal = args.input_goal
-    env_cfg = PointNavEnvCfg(input_goal=input_goal)
-    img_size = env_cfg.camera_resolution[0]
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    def encoder_factory():
-        return PointNavEncoder(
-            input_rgb=env_cfg.input_rgb,
-            input_goal=input_goal,
-            img_size=img_size,
+    # 学習時の観測空間を再現してエンコーダ構成を決める(goalの角度はgoal_vec()でπ正規化済み)
+    obs_space_dict = {"rgb": spaces.Box(0.0, 1.0, (3, _IMG_SIZE, _IMG_SIZE), dtype=np.float32)}
+    if input_goal:
+        obs_space_dict["goal"] = spaces.Box(
+            low=np.array([0.0, -1.0], dtype=np.float32),
+            high=np.array([np.inf, 1.0], dtype=np.float32),
+            dtype=np.float32,
         )
+    model_obs_space, _ = build_obs_pipeline(spaces.Dict(obs_space_dict), device)
 
     model = SACAgent(
-        encoder_factory=encoder_factory, action_dim=2, cfg=SACCfg(), device=device
+        encoder_factory=lambda: make_encoder(model_obs_space),
+        action_dim=2,
+        cfg=TrainConfig(stage="unused"),  # 実機デプロイではstage(シミュレータ用ステージ名)は使わない
+        device=device,
     )
     model.load(args.model)
 
