@@ -3,13 +3,14 @@
 
 W/S: 前進/後退  A/D: 左回転/右回転  P: 座標表示  R: リセット  Q: 終了
 
---num-humans > 0 の場合は人間アバター(ORCA + ai4animationpy, envs/human_controller/)を注入する
+--num-humans > 0 の場合は人間アバター(ORCA + IRA)を注入する
 
 実行:
   cd ~/Programs/Isaac-GS
   uv run debug/teleop.py
   uv run debug/teleop.py --num-humans 2
   uv run debug/teleop.py --stage corridor1
+  uv run debug/teleop.py --robot cylinder  # 差動二輪の代わりにcmd_vel直接駆動の円柱で確認
 """
 
 import argparse
@@ -24,6 +25,10 @@ parser.add_argument("--num-humans", type=int, default=0)
 parser.add_argument("--headless", action="store_true", default=False)
 parser.add_argument(
     "--stage", type=str, choices=stage_names(), default="corridor2"
+)
+parser.add_argument(
+    "--robot", type=str, choices=["jackal", "cylinder"], default="jackal",
+    help="jackal(差動二輪) | cylinder(cmd_vel直接駆動の単純な円柱、車輪動力学の影響切り分け用)",
 )
 parser.add_argument(
     "--vis-goal", action="store_true", default=False, help="スポーン(青)・ゴール(赤)地点に半透明の円を表示"
@@ -76,10 +81,13 @@ def _update_marker(prim, pos):
 
 
 def main():
+    from envs.config import CYLINDER_ROBOT, JACKAL
+
     env_cfg = EnvConfig.from_preset(
         args.stage,
         num_humans=args.num_humans,
         human_speed_range=(0.8, 1.5),
+        robot=CYLINDER_ROBOT if args.robot == "cylinder" else JACKAL,
     )
     env = PointNavIsaacEnv(env_cfg)
     env.reset()
@@ -109,9 +117,11 @@ def main():
         return True
 
     input_iface.subscribe_to_keyboard_events(keyboard, on_key)
-    print("[Teleop] W/S=前後  A/D=回転  P=座標表示  R=リセット  Q=終了")
+    print("[Teleop] W/S=前後  A/D=回転  P=座標表示  C=RGB観測をPNG保存  R=リセット  Q=終了")
     if args.num_humans > 0:
         print(f"[Teleop] 人物 {args.num_humans} 体, 接触センサーで衝突検知")
+
+    snapshot_dir = Path(__file__).parent / "_snapshots"
 
     step = 0
     prev_human_collision = False
@@ -153,6 +163,21 @@ def main():
         obs, reward, terminated, truncated, info = env.step(
             np.array([v_x, omega], dtype=np.float32)
         )
+
+        if carb.input.KeyboardInput.C in keys_pressed:
+            keys_pressed.discard(carb.input.KeyboardInput.C)
+            if "rgb" in obs:
+                from PIL import Image
+
+                # obs["rgb"]はモデル入力用にCHW・float32[0,1]へ正規化済み(RGBCameraTerm.compute()参照)
+                # なので、PNG保存用にHWC・uint8[0,255]へ戻す
+                rgb_hwc = (obs["rgb"].transpose(1, 2, 0) * 255.0).clip(0, 255).astype(np.uint8)
+                snapshot_dir.mkdir(exist_ok=True)
+                out_path = snapshot_dir / f"step{step:05d}.png"
+                Image.fromarray(rgb_hwc).save(out_path)
+                print(f"\n[Teleop] RGB観測を保存しました: {out_path}")
+            else:
+                print("\n[Teleop] 観測にrgbキーがありません(observationsの設定を確認してください)")
 
         pos = env.robot_pos
 
@@ -203,6 +228,9 @@ def main():
                 f"collision={int(info.get('collision', False))}",
                 end="\r",
             )
+
+        if info.get("human_locomotion_anomaly", False):
+            print(f"\n[Teleop] 人物モーション異常検知によりエピソード終了(自動リセットは行いません): {info}")
 
         if (terminated or truncated) and args.reset:
             print()

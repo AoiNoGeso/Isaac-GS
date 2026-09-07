@@ -50,13 +50,44 @@ if Path(f"{train_cfg.log_dir}/sac_final.pt").exists():
 _OUT = sys.stdout  # launch_sim()前のstdoutを捕捉(tqdm.writeの出力先)
 assert "torch" not in sys.modules, "launch_sim()前にtorchがimportされている"
 
+# wandbのコンソールキャプチャはinit()呼び出し時点のsys.stdout/stderrをラップする。
+# launch_sim()(IsaacSimのSimulationApp)はKit自身のロギング機構に繋ぐためグローバルな
+# sys.stdout/stderrを差し替えるので、launch_sim()より後にwandb.init()すると
+# 上記_OUT(差し替え前の本物のstdout)と別物をラップしてしまい、_OUTへ書いているtqdmの
+# 出力がwandbの「Logs」タブに一切届かなくなる。必ずlaunch_sim()より前にinit()すること
+# (env構築後にしか分からないconfig項目は後段でwandb.config.update()する)。
+import wandb
+
+_LOGGED_SAC_KEYS = (
+    "buffer_size",
+    "batch_size",
+    "gamma",
+    "tau",
+    "learning_rate",
+    "learning_starts",
+    "train_freq",
+    "gradient_steps",
+    "target_entropy",
+)
+use_wandb = not args.no_wandb
+if use_wandb:
+    wandb.init(
+        project=train_cfg.project_name,
+        name=train_cfg.run_name,
+        config={
+            "total_timesteps": train_cfg.total_timesteps,
+            **({"num_humans": args.num_humans} if args.num_humans is not None else {}),
+            **{f"sac/{k}": getattr(train_cfg, k) for k in _LOGGED_SAC_KEYS},
+        },
+        dir=train_cfg.log_dir,
+    )
+
 from utils.launch_sim import launch_sim
 
 app = launch_sim(headless=args.headless, gpu=args.gpu)
 
 # ここから先はtorch依存モジュールをimportしてよい
 import torch
-import wandb
 
 from envs import PointNavGymEnv
 from envs.config import EnvConfig, get_preset
@@ -69,19 +100,6 @@ mpol = importlib.import_module(f"models.{args.model}.policy")
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# wandbのconfigに残すSACハイパーパラメータ
-_LOGGED_SAC_KEYS = (
-    "buffer_size",
-    "batch_size",
-    "gamma",
-    "tau",
-    "learning_rate",
-    "learning_starts",
-    "train_freq",
-    "gradient_steps",
-    "target_entropy",
-)
-
 
 def main():
     """環境・エージェント・リプレイバッファを構築し、train()に処理を渡す"""
@@ -93,20 +111,14 @@ def main():
     env = PointNavGymEnv(env_cfg=env_cfg)
     model_obs_space, obs_transform = mnet.build_obs_pipeline(env.observation_space, DEVICE)
 
-    use_wandb = not args.no_wandb
     if use_wandb:
-        wandb.init(
-            project=train_cfg.project_name,
-            name=train_cfg.run_name,
-            config={
-                "total_timesteps": train_cfg.total_timesteps,
-                "obs_keys": list(model_obs_space.spaces),
-                "stack_size": train_cfg.stack_size,
-                "num_humans": env_cfg.num_humans,
-                **{f"sac/{k}": getattr(train_cfg, k) for k in _LOGGED_SAC_KEYS},
-            },
-            dir=train_cfg.log_dir,
-        )
+        # env構築後にしか分からない項目をここで追記する(wandb.init()自体はlaunch_sim()より前、
+        # ファイル先頭で済ませてある。理由は_OUT/wandbコンソールキャプチャのコメント参照)
+        wandb.config.update({
+            "obs_keys": list(model_obs_space.spaces),
+            "stack_size": train_cfg.stack_size,
+            "num_humans": env_cfg.num_humans,
+        })
 
     obs, reset_info = env.reset()
 

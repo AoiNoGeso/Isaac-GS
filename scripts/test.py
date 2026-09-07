@@ -3,7 +3,7 @@
 Isaac Simを1度だけ起動した単一プロセス内で順に評価し、wandbの同一runへ
 stepごとにログする。
 実行例:
-  uv run scripts/test.py --model sac --checkpoint runs/S1-RGB+G/corridor2/sac_final.pt --stage-index 0
+  uv run scripts/test.py --model sac --checkpoint runs/S1-RGB+G/corridor2/sac_final.pt --stage corridor2
   uv run scripts/test.py --model sac_DINOv3 --checkpoint runs_forSI/.../checkpoints --log-dir runs_forSI/.../test/S1/log --headless"""
 
 import argparse
@@ -51,7 +51,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--model", choices=_MODELS, required=True)
 parser.add_argument("--checkpoint", type=str, required=True, help="チェックポイントのファイルまたはディレクトリ")
 parser.add_argument("--log-dir", type=str, required=True, help="結果ログ・wandbデータの出力先ディレクトリ")
-parser.add_argument("--stage-index", type=int, default=0, help="評価するステージのインデックス")
+parser.add_argument("--stage", type=str, default="corridor2", help="評価するステージ名")
 parser.add_argument("--num-humans", type=int, default=0)
 parser.add_argument("--episodes", type=int, default=None, help="TestConfig.episodes_per_stageを上書き(スモーク用)")
 parser.add_argument("--headless", action="store_true", default=False)
@@ -103,16 +103,15 @@ def main():
         app.close()
         return
 
-    names = stage_names()
-    if args.stage_index >= len(names):
-        print(f"[test] Error: stage-index {args.stage_index} は範囲外です (stages={len(names)})")
+    if args.stage not in stage_names():
+        print(f"[test] Error: stage {args.stage!r} は未登録です (stages={stage_names()})")
         app.close()
         return
 
-    stage_name = names[args.stage_index]
+    stage_name = args.stage
     stage_cfg = get_preset(stage_name)
 
-    print(f"[test] Stage {args.stage_index}: {stage_cfg.stage_path}")
+    print(f"[test] Stage {stage_name}: {stage_cfg.stage_path}")
     print(f"[test] Checkpoints: {len(checkpoints)} 個 in {checkpoint_path}")
     print(f"[test] Episodes per checkpoint: {test_cfg.episodes_per_stage}")
     print(f"[test] num_humans: {args.num_humans}")
@@ -196,7 +195,7 @@ def main():
             lines = [
                 separator,
                 f"Checkpoint: {ckpt_path.name} (step={step})",
-                f"Stage {args.stage_index}: {stage_cfg.stage_path}",
+                f"Stage {stage_name}: {stage_cfg.stage_path}",
                 separator,
                 *stats.report_lines(),
                 separator,

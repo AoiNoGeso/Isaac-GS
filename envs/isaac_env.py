@@ -7,6 +7,7 @@ from gymnasium import spaces
 from envs.config import EnvConfig, RobotConfig
 from envs.geometry import goal_vec, quat_to_yaw
 from envs.human_controller import HumanManager
+from envs.human_controller.health import HumanLocomotionAnomaly
 from envs.observations import ObservationManager, observation_space_from_cfg
 
 # 落下判定
@@ -81,8 +82,10 @@ class PointNavIsaacEnv:
 
         enable_extension("omni.anim.navigation.bundle")
         if self._has_humans:
-            # 人物の高さ追従用カプセル(envs/human_controller/human_manager.py)を動かすのに必要。
-            enable_extension("omni.physx.cct")
+            # IRA(envs/human_controller/ira_agent.py)による人物歩行アニメーションに必要。
+            from envs.human_controller import ira_agent
+
+            ira_agent.enable_ira_extensions()
         for _ in range(10):
             kit_app.update()
 
@@ -90,8 +93,33 @@ class PointNavIsaacEnv:
 
         self._inav = nav.acquire_interface()
 
+        if self._has_humans:
+            # IRAをデフォルトステージへ直接注入するとセグフォルトする(過去の検証で判明した制約)ため、
+            # 人物ありの場合のみ明示的に新規ステージを作成してから読み込みを進める。
+            import asyncio
+
+            future = asyncio.ensure_future(omni.usd.get_context().new_stage_async())
+            while not future.done():
+                kit_app.update()
+            future.result()
+            for _ in range(3):
+                kit_app.update()
+
         add_reference_to_stage(usd_path=self.env_cfg.stage_path, prim_path="/World/env")
-        add_reference_to_stage(usd_path=robot.usd_url, prim_path=robot.prim_path)
+        if robot.drive_mode == "direct_velocity":
+            self._create_cylinder_robot_prim(robot)
+        else:
+            add_reference_to_stage(usd_path=robot.usd_url, prim_path=robot.prim_path)
+
+        if self._has_humans and omni.usd.get_context().get_stage().GetPrimAtPath("/World/env/gs"):
+            # The mesh-raycast BVH repeatedly tries to triangulate Gaussian splats.
+            # Its query exclusion API does not prevent those build-time warnings.
+            # Suppress this channel's warnings only; retain errors and other channels.
+            import omni.log
+
+            omni.log.get_log().set_channel_level(
+                "omni.meshraycast.plugin", omni.log.Level.ERROR, omni.log.SettingBehavior.OVERRIDE
+            )
 
         # LiDARセンサー機能は維持したまま, デバッグ用の描画光線のみ非表示にする
         robot_stage = omni.usd.get_context().get_stage()
@@ -103,7 +131,7 @@ class PointNavIsaacEnv:
 
         self._world = World(
             physics_dt=self.env_cfg.physics_dt,
-            rendering_dt=self.env_cfg.rendering_dt,
+            rendering_dt=(self.env_cfg.physics_dt if self._has_humans else self.env_cfg.rendering_dt),
             stage_units_in_meters=1.0,
         )
         self._world.reset()
@@ -126,24 +154,33 @@ class PointNavIsaacEnv:
 
         self._bake_navmesh(stage)
 
-        self._robot = Articulation(prim_paths_expr=robot.prim_path)
-        self._robot.initialize()
+        if robot.drive_mode == "direct_velocity":
+            from isaacsim.core.prims import RigidPrim
 
-        dof_names = list(self._robot.dof_names)
-        try:
-            self._left_wheel_idx = [dof_names.index(j) for j in robot.left_wheel_joints]
-            self._right_wheel_idx = [dof_names.index(j) for j in robot.right_wheel_joints]
-        except ValueError as e:
-            import carb
+            self._robot = RigidPrim(prim_paths_expr=robot.prim_path)
+            self._robot.initialize()
+            self._robot.disable_gravities()
+            self._left_wheel_idx = self._right_wheel_idx = None
+            chassis_prim_path = robot.prim_path
+        else:
+            self._robot = Articulation(prim_paths_expr=robot.prim_path)
+            self._robot.initialize()
 
-            carb.log_error(
-                f"[PointNavIsaacEnv] ホイール joint 名が dof_names に見つかりません: {e}"
-                f" dof_names={dof_names}"
-            )
-            raise
+            dof_names = list(self._robot.dof_names)
+            try:
+                self._left_wheel_idx = [dof_names.index(j) for j in robot.left_wheel_joints]
+                self._right_wheel_idx = [dof_names.index(j) for j in robot.right_wheel_joints]
+            except ValueError as e:
+                import carb
 
-        # chassis_linkにPhysxContactReportAPIを付与しContactSensorを設置
-        chassis_prim_path = f"{robot.prim_path}/{robot.chassis_link}"
+                carb.log_error(
+                    f"[PointNavIsaacEnv] ホイール joint 名が dof_names に見つかりません: {e}"
+                    f" dof_names={dof_names}"
+                )
+                raise
+            chassis_prim_path = f"{robot.prim_path}/{robot.chassis_link}"
+
+        # 接触判定用ボディ(direct_velocityでは円柱本体そのもの)にPhysxContactReportAPIを付与しContactSensorを設置
         chassis_prim = stage.GetPrimAtPath(chassis_prim_path)
         contact_report = PhysxSchema.PhysxContactReportAPI.Apply(chassis_prim)
         contact_report.CreateThresholdAttr().Set(0)
@@ -161,6 +198,29 @@ class PointNavIsaacEnv:
         self._human_mgr = HumanManager(self.env_cfg, self._world, self._inav)
         if self._has_humans:
             self._human_mgr.inject_humans(stage)
+
+    def _create_cylinder_robot_prim(self, robot: RobotConfig) -> None:
+        """Jackalの差動二輪(ホイールjoint角速度目標→摩擦・トルク制限を介した加速)の代わりに、
+        cmd_velを車輪動力学無しで本体速度へ直接反映できる、単純な円柱剛体を生成する。"""
+        import omni.usd
+        from pxr import Gf, PhysxSchema, UsdGeom, UsdPhysics
+
+        stage = omni.usd.get_context().get_stage()
+        cyl = UsdGeom.Cylinder.Define(stage, robot.prim_path)
+        cyl.CreateRadiusAttr(robot.footprint_radius)
+        cyl.CreateHeightAttr(robot.cylinder_height)
+        cyl.CreateAxisAttr("Z")
+        prim = cyl.GetPrim()
+        UsdGeom.Xformable(prim).AddTranslateOp()
+        UsdPhysics.CollisionAPI.Apply(prim)
+        UsdPhysics.RigidBodyAPI.Apply(prim)
+        UsdPhysics.MassAPI.Apply(prim).CreateMassAttr().Set(10.0)
+        PhysxSchema.PhysxRigidBodyAPI.Apply(prim).CreateDisableGravityAttr().Set(True)
+
+    def _step_world(self, render: bool) -> None:
+        """self._world.step()のラッパー"""
+        # IRA evaluates on Kit updates; render=False advances PhysX alone.
+        self._world.step(render=render or self._has_humans)
 
     def _bake_navmesh(self, stage) -> None:
         """床・壁メッシュを一時的に可視化してNavMeshをbakeする
@@ -195,7 +255,7 @@ class PointNavIsaacEnv:
                 UsdGeom.Imageable(p).MakeVisible()
                 vis_prims.append(p)
         for _ in range(10):
-            self._world.step(render=True)
+            self._step_world(render=True)
 
         self._inav.start_navmesh_baking_and_wait()
 
@@ -238,7 +298,7 @@ class PointNavIsaacEnv:
 
         for _ in range(10):
             self._teleport_robot(robot_pos, yaw=spawn_yaw)
-            self._world.step(render=False)
+            self._step_world(render=False)
             if self._check_velocity_explosion():
                 self._recover_physics()
                 robot_pos = self._sample_navmesh_point()
@@ -248,10 +308,10 @@ class PointNavIsaacEnv:
                 break
             robot_pos = self._sample_navmesh_point()
             self._teleport_robot(robot_pos, yaw=spawn_yaw)
-            self._world.step(render=False)
+            self._step_world(render=False)
 
         self._teleport_robot(robot_pos, yaw=spawn_yaw)
-        self._world.step(render=True)
+        self._step_world(render=True)
 
         if self._has_humans:
             self._human_mgr.reset_humans(robot_pos_xy=(float(robot_pos[0]), float(robot_pos[1])))
@@ -268,10 +328,23 @@ class PointNavIsaacEnv:
             if self._has_humans:
                 pos_xy = tuple(self._get_robot_pos()[[0, 1]])
                 vel_xy = self._get_robot_velocity_xy()
-                self._human_mgr.pre_physics_step(self.env_cfg.physics_dt, pos_xy, vel_xy)
-            self._world.step(render=(i == self.env_cfg.decimation - 1))
+                try:
+                    self._human_mgr.pre_physics_step(self.env_cfg.physics_dt, pos_xy, vel_xy)
+                except HumanLocomotionAnomaly as exc:
+                    import carb
+
+                    carb.log_warn(f"[PointNavIsaacEnv] 人物モーション異常検知によりエピソード終了: {exc}")
+                    result = self._human_anomaly_termination()
+                    break
+            self._step_world(render=(i == self.env_cfg.decimation - 1))
             if self._has_humans:
-                self._human_mgr.post_physics_step()
+                try:
+                    self._human_mgr.post_physics_step()
+                except HumanLocomotionAnomaly as exc:
+                    import carb
+                    carb.log_warn(f"IRA locomotion anomaly: {exc}")
+                    result = self._human_anomaly_termination()
+                    break
 
             human_hit = human_hit or self._check_human_contact()
 
@@ -310,11 +383,21 @@ class PointNavIsaacEnv:
         return obs, reward, terminated, truncated, info
 
     def _apply_action(self, action: np.ndarray) -> None:
-        """行動[v_x, ω]を差動二輪のjoint角速度目標へ変換して指令する"""
+        """行動[v_x, ω]を指令する。drive_mode="differential"は差動二輪のjoint角速度目標へ変換、
+        "direct_velocity"は車輪動力学を介さず本体の並進・角速度へ直接反映する。"""
         robot = self.robot_cfg
         v_x = float(np.clip(action[0], -1.0, 1.0)) * robot.v_linear_max
         omega = float(np.clip(action[1], -1.0, 1.0)) * robot.v_angular_max
         self._last_omega = omega
+
+        if robot.drive_mode == "direct_velocity":
+            yaw = quat_to_yaw(*self._get_robot_quat())
+            vel_world = np.array(
+                [[v_x * np.cos(yaw), v_x * np.sin(yaw), 0.0]], dtype=np.float32
+            )
+            self._robot.set_linear_velocities(vel_world)
+            self._robot.set_angular_velocities(np.array([[0.0, 0.0, omega]], dtype=np.float32))
+            return
 
         v_left = v_x - omega * robot.wheel_base / 2.0
         v_right = v_x + omega * robot.wheel_base / 2.0
@@ -330,6 +413,10 @@ class PointNavIsaacEnv:
         self._robot.set_joint_velocity_targets(velocities=vel_target[np.newaxis, :])
 
     def _stop_wheels(self) -> None:
+        if self.robot_cfg.drive_mode == "direct_velocity":
+            self._robot.set_linear_velocities(np.zeros((1, 3), dtype=np.float32))
+            self._robot.set_angular_velocities(np.zeros((1, 3), dtype=np.float32))
+            return
         self._robot.set_joint_velocity_targets(
             velocities=np.zeros((1, self._robot.num_dof), dtype=np.float32)
         )
@@ -342,6 +429,18 @@ class PointNavIsaacEnv:
         self._prev_dist = dist
         info = self._episode_info(pos, dist, success=False, collision=True)
         return obs, float(self.env_cfg.r_collision), True, False, info
+
+    def _human_anomaly_termination(self) -> tuple[dict, float, bool, bool, dict]:
+        """人物モーション異常(NaN/Inf/フリーズ疑い)検知でエピソードを即座に打ち切る際の戻り値を組み立てる
+        (「異常を隠さないため自動リセットは行わない」方針、tests/reIRA/README.md参照。ここでの
+        terminated=Trueは通常のRLループのリセット処理に乗るだけで、異常自体の自動修復は一切行わない)"""
+        obs = self._get_obs()
+        pos = self._get_robot_pos()
+        dist = self._dist_to_goal(pos)
+        self._prev_dist = dist
+        info = self._episode_info(pos, dist, success=False, collision=False)
+        info["human_locomotion_anomaly"] = True
+        return obs, 0.0, True, False, info
 
     def _episode_info(
         self, pos: np.ndarray, dist: float, success: bool, collision: bool, timeout: bool = False
@@ -458,7 +557,7 @@ class PointNavIsaacEnv:
 
     def _check_human_contact(self) -> bool:
         """人物との接触判定。ロボットと各人物のワールド座標間の距離ベースで判定する
-        (ai4animationpyで駆動する人物はkinematicでContactSensorだけでは検知漏れが起きるため、
+        (IRAで駆動する人物はkinematicでContactSensorだけでは検知漏れが起きるため、
         距離ベースの判定に一本化している)"""
         if not self._has_humans:
             return False
@@ -486,7 +585,7 @@ class PointNavIsaacEnv:
             safe_pos = self._get_robot_pos()
         for _ in range(20):
             self._teleport_robot(safe_pos)
-            self._world.step(render=False)
+            self._step_world(render=False)
             if not self._check_velocity_explosion():
                 break
 
@@ -518,9 +617,10 @@ class PointNavIsaacEnv:
             positions=np.array([[pos[0], pos[1], pos[2]]], dtype=np.float32),
             orientations=quat,
         )
-        self._robot.set_joint_velocities(
-            np.zeros((1, self._robot.num_dof), dtype=np.float32)
-        )
+        if self.robot_cfg.drive_mode != "direct_velocity":
+            self._robot.set_joint_velocities(
+                np.zeros((1, self._robot.num_dof), dtype=np.float32)
+            )
         self._robot.set_linear_velocities(np.zeros((1, 3), dtype=np.float32))
         self._robot.set_angular_velocities(np.zeros((1, 3), dtype=np.float32))
 

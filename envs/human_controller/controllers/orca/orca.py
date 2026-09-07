@@ -83,6 +83,13 @@ class ORCASimulator:
         """外部(物理シミュレーション側)の実位置とORCA内部の位置を同期させたい場合に使う。"""
         self._sim.setAgentPosition(agent_id, tuple(position))
 
+    def set_velocity(self, agent_id: int, velocity: Tuple[float, float]):
+        """外部(IRA等のアニメーションシステム)の実速度をORCA内部のagent速度推定に同期させる。
+        reciprocal avoidanceは近傍エージェントの現在速度を使って回避方向を計算するため、
+        外部システムが独自にアバターを動かす構成では、ORCA自身のstep()による積分速度ではなく
+        実際に動いた速度をここで都度渡さないと、近傍からの回避計算が古い/誤った速度を前提にしてしまう。"""
+        self._sim.setAgentVelocity(agent_id, tuple(velocity))
+
     def step(self):
         self._sim.doStep()
 

@@ -24,6 +24,11 @@ class CrowdController(Protocol):
         """外部(モーション生成側)の実位置とコントローラ内部の位置を同期させる"""
         ...
 
+    def set_velocity(self, agent_id: int, velocity: Tuple[float, float]) -> None:
+        """外部(モーション生成側)の実速度をコントローラ内部の速度推定に同期させる
+        (近傍エージェントからの回避計算に使われる)"""
+        ...
+
     def step(self) -> None:
         """1ステップ分、全エージェントの衝突回避後速度を計算する"""
         ...

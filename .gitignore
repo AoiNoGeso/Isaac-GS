@@ -19,4 +19,4 @@ assets/avatars/*
 docs/
 wandb/
 runs*/
-tests/
+tests/*

@@ -20,7 +20,7 @@ RL 学習 (scripts/train.py)  ← 起動時に NavMesh をランタイム bake
 
 生成される `stage.usda` は 3DGS を視覚表現とし，床・壁メッシュを不可視コライダとして重ねることで，リアルな見た目と正確な物理コリジョンを両立します
 
-`--num-humans` を指定すると ORCA(衝突回避)+ ai4animationpy(歩行モーション生成)による歩行者を注入し，Social Navigation(人物回避を伴うナビゲーション)としても学習できます
+`--num-humans` を指定すると ORCA(衝突回避)+ IRA(`omni.anim.behavior.core`, 歩行モーション生成)による歩行者を注入し，Social Navigation(人物回避を伴うナビゲーション)としても学習できます
 
 ## 前提条件
 
@@ -34,8 +34,6 @@ RL 学習 (scripts/train.py)  ← 起動時に NavMesh をランタイム bake
 Isaac-GS/
 ├── setup.sh                    # 環境構築スクリプト
 ├── pyproject.toml              # Isaac-GS 追加依存パッケージ管理
-├── submodules/
-│   └── ai4animationpy/          # git submodule 歩行モデル本体・重み・Guidancesの取得元
 ├── stage_generation/            # 統合 CLI: python -m stage_generation {convert-gs,convert-mesh,compose}
 │   ├── __main__.py              # argparse エントリポイント(サブコマンド定義)
 │   ├── convert_gs.py            # GS (.ply) → .usdc 変換
@@ -43,8 +41,7 @@ Isaac-GS/
 │   ├── compose.py                # gs.usdc + floor/wall → stage.usda 合成
 │   └── coords.py                 # source-up-axis → Z-up 座標変換
 ├── assets/
-│   ├── stages/                    # ステージファイル置き場
-│   └── avatars/                   # 人物アバターUSD置き場(utils/convert_glb2usd.pyの出力先)
+│   └── stages/                    # ステージファイル置き場
 ├── envs/
 │   ├── config.py                 # EnvConfig(observations辞書 + 物理/報酬/人物設定) / RobotConfig(+JACKAL)
 │   ├── stage_config.py           # StagePreset / STAGE_PRESETS / get_preset / stage_names
@@ -58,8 +55,9 @@ Isaac-GS/
 │   │   └── camera.py             # RGBCamera(USDカメラprimの低レベルラッパー)
 │   └── human_controller/         # 人物キャラの衝突回避・歩行モーション・USD配置
 │       ├── base.py               # CrowdController(Protocol) — 衝突回避アルゴリズムの共通インターフェース
-│       ├── human_manager.py      # HumanManager — CrowdController + LocomotionPool を接続するマネージャ
-│       ├── locomotion.py         # LocomotionPool/LocomotionAgent — ai4animationpyによる歩行モーション生成
+│       ├── human_manager.py      # HumanManager — CrowdController + IRA を接続するマネージャ
+│       ├── ira_agent.py          # IRA(omni.anim.behavior.core)キャラクターのスポーン・エージェント操作
+│       ├── health.py             # HealthMonitor — 人物モーションのNaN/Inf・フリーズ検知
 │       └── controllers/orca/     # ORCASimulator(RVO2ラッパー)
 ├── models/
 │   ├── sac/                      # 自前実装 SAC(参照実装)
@@ -80,8 +78,7 @@ Isaac-GS/
 │   ├── rollout.py                 # evaluate() — 評価ロールアウトの唯一の実装(train/test共用)
 │   ├── train_loop.py              # train() / validation() — 学習ループ本体(scripts/train.pyが呼ぶ)
 │   ├── recorder.py                # EpisodeRecorder / make_overhead_camera — 動画収録
-│   ├── launch_sim.py              # launch_sim() — SimulationApp起動の共通処理
-│   └── convert_glb2usd.py         # glTF(.glb) → USD 変換ツール(人物アバター用)
+│   └── launch_sim.py              # launch_sim() — SimulationApp起動の共通処理
 ├── deploy/
 │   └── deploy.py                 # 実機 policy 推論ノード (ROS2)
 └── debug/
@@ -91,7 +88,7 @@ Isaac-GS/
 ## 環境構築
 
 ```bash
-git clone --recursive https://github.com/AoiNoGeso/Isaac-GS.git
+git clone https://github.com/AoiNoGeso/Isaac-GS.git
 cd Isaac-GS
 ```
 
@@ -112,14 +109,12 @@ zsh setup.sh
 
 `setup.sh` は以下を順番に実行します：
 
-0. `git submodule update --init --recursive` で [ai4animationpy](https://github.com/facebookresearch/ai4animationpy.git) submodule(`submodules/ai4animationpy`)を取得
 1. リポジトリ直下に `.venv` (Python 3.12) 仮想環境を作成
 2. IsaacSim 6.0.1 をインストール(CUDA対応のtorch/torchvisionが同梱される)
 3. `pyproject.toml` のパッケージ (gymnasium / wandb / Pillow / pydantic / opencv-python) をインストール
-4. `submodules/ai4animationpy`(歩行モーション生成)をインストール
-5. [Python-RVO2](https://github.com/sybrenstuvel/Python-RVO2.git)をCython経由でソースビルドインストール
+4. [Python-RVO2](https://github.com/sybrenstuvel/Python-RVO2.git)をCython経由でソースビルドインストール
 
-歩行モデルの重み(`Network.pt`/`PostProcessor.pt`)・アバターメッシュ(`Model.glb`)・ガイダンステンプレートは、いずれもIsaac-GS側に複製せず `submodules/ai4animationpy/Demos/` 配下を直接参照します(`envs/human_controller/locomotion.py`)
+歩行モーション生成はIsaacSim付属のIRA(`isaacsim.replicator.agent` / `omni.anim.behavior.core`)を使うため、別途submoduleの取得は不要です。キャラクターUSD・モーションライブラリはIsaacSim Nucleusアセット(`Isaac/People/`配下)から自動解決されます(`envs/human_controller/ira_agent.py`, `envs/config.py`の`human_avatar_character`/`human_motion_library`)
 
 ## パイプライン実行手順
 
@@ -150,18 +145,6 @@ uv run python -m stage_generation compose -i assets/stages/corridor1
 ```
 
 出力: `assets/stages/corridor1/stage.usda`(NavMesh自体は学習/テスト実行時にランタイムで自動bakeされる)
-
-### 人物アバター (.glb) → .usd
-
-Social Navigationで使う人物アバターのUSDは`utils/convert_glb2usd.py`で変換します
-
-```bash
-uv run utils/convert_glb2usd.py \
-    --i submodules/ai4animationpy/Demos/_ASSETS_/Geno/Model.glb \
-    --o assets/avatars/Model.usd
-```
-
-`envs/human_controller/human_manager.py`は`assets/avatars/Model.usd`を読み込む前提のため、`--num-humans > 0`で学習/テスト/デバッグを行う前に一度だけ実行しておく必要があります(未変換の場合はエラーメッセージに変換コマンドが表示されます)。`--i`/`--o`は任意の`.glb`/`.usd`パスを指定できる汎用ツールなので、別のアバターメッシュに差し替える場合も同様に使えます
 
 ### 4. ステージ登録
 
@@ -196,14 +179,14 @@ uv run scripts/train.py --model sac_DINOv3 --headless
 学習済みモデルを評価します。評価エピソード数は `models/<model>/config.py` の `TestConfig` で定義します
 
 ```bash
-# 単一ステージ(index 0)
+# 単一ステージ
 uv run scripts/test.py --model sac \
     --checkpoint runs/SocialNav-RGB+Goal/corridor2/sac_final.pt \
     --log-dir runs/SocialNav-RGB+Goal/corridor2/test \
-    --stage-index 0
+    --stage corridor2
 
 # 各エピソードの映像を保存(俯瞰カメラも設定されていれば同時保存)
-uv run scripts/test.py --model sac --checkpoint <path> --log-dir <dir> --stage-index 2 --video
+uv run scripts/test.py --model sac --checkpoint <path> --log-dir <dir> --stage corridor1 --video
 
 # チェックポイントディレクトリを丸ごと掃引(DINOv3視覚エンコーダ版)
 uv run scripts/test.py --model sac_DINOv3 --checkpoint <dir> --log-dir <dir> --headless
@@ -214,7 +197,7 @@ uv run scripts/test.py --model sac_DINOv3 --checkpoint <dir> --log-dir <dir> --h
 | `--model` | モデルの種類 `{sac, sac_DINOv3}`(必須) |
 | `--checkpoint` | チェックポイントのファイルまたはディレクトリ(必須、ディレクトリなら全件掃引) |
 | `--log-dir` | 結果ログ・wandbデータの出力先ディレクトリ(必須) |
-| `--stage-index` | 評価するステージのインデックス(デフォルト 0) |
+| `--stage` | 評価するステージ名(デフォルト `corridor2`) |
 | `--num-humans` | 人物キャラの数(デフォルト 0) |
 | `--episodes` | `TestConfig.episodes_per_stage` を上書き(スモークテスト用) |
 | `--headless` | ヘッドレス実行 |
@@ -257,7 +240,7 @@ print(pos, quat.GetReal(), quat.GetImaginary())
 
 ```bash
 uv run debug/teleop.py
-uv run debug/teleop.py --num-humans 2             # ORCA+ai4animationpyの人物キャラを注入して衝突判定を確認
+uv run debug/teleop.py --num-humans 2             # ORCA+IRAの人物キャラを注入して衝突判定を確認
 uv run debug/teleop.py --stage corridor1 --reset  # 衝突/成功/タイムアウトで自動リセット
 uv run debug/teleop.py --vis-goal                 # スポーン(青)・ゴール(赤)地点に半透明の円を表示
 ```
@@ -296,3 +279,27 @@ uv run debug/teleop.py --vis-goal                 # スポーン(青)・ゴー�
   export GSPLAT_DIR=...
   export USD_LIBS=...
   ```
+
+
+### IRA人物制御の検証
+
+人物ありの環境は、実測位置・速度をORCAへ同期してから、回避後の速度をIRAの
+`set_speed` / `move_to`へ渡します。既定は60 Hz物理更新・10 Hz指令更新
+(`human_anim_stride=6`)、毎回の指令再発行(`human_ira_reissue_policy="reissue"`)です。
+`hold`はゴールまでIRAに任せる比較用で、逐次ORCA制御には使用しません。
+勾配のある床では先読み移動先をNavMeshへ投影し、エピソード間はエージェントの
+`reset()`で再配置します。
+
+IRAはKit更新時に進むため、人物ありでは毎物理stepで`World.step(render=True)`を
+呼び、描画周期も物理周期に合わせます。人物なしより描画負荷が増えます。
+位置・回転のNaN/Infと、非ゼロ指令下で5秒間停止した人物は異常としてエピソードを終了します。
+
+```bash
+# GPUを使用：本番HumanManagerによる2人のすれ違い、1800物理step、2回リセット
+.venv/bin/python tests/reIRA/check_manager.py
+# GPUを使用：corridor2ステージ・Jackal・観測取得を含む2エピソード
+.venv/bin/python tests/reIRA/check_environment.py
+```
+
+成功時はそれぞれ`MANAGER_PASS` / `ENV_PASS`を出力します。
+最小環境の40万step完走は確認済みですが、本番環境の長時間安定性は別途確認が必要です。

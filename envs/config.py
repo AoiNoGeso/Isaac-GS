@@ -6,6 +6,7 @@ from envs.stage_config import STAGE_PRESETS, StagePreset, get_preset, stage_name
 __all__ = [
     "RobotConfig",
     "JACKAL",
+    "CYLINDER_ROBOT",
     "StagePreset",
     "STAGE_PRESETS",
     "get_preset",
@@ -16,6 +17,8 @@ __all__ = [
 
 class RobotConfig(BaseModel):
     name: str = "jackal"
+    drive_mode: str = "differential"  # "differential"(Jackal本体、ホイールjoint角速度目標経由) |
+    # "direct_velocity"(単純な円柱剛体、cmd_vel[v_x, omega]を車輪動力学を介さず本体速度へ直接反映)
     usd_url: str = (
         "https://omniverse-content-production.s3-us-west-2.amazonaws.com"
         "/Assets/Isaac/6.0/Isaac/Robots/Clearpath/Jackal/jackal.usd"
@@ -37,10 +40,25 @@ class RobotConfig(BaseModel):
     v_angular_max: float = 0.5  # 最大角速度 [rad/s]
     spawn_offset: float = 0.1  # スポーン時のz方向オフセット [m]
     rollover_threshold: float = -0.7  # 転倒判定のしきい値
-    footprint_radius: float = 0.35  # 衝突回避(CrowdController)に登録する実効半径 [m](Jackal footprint 0.508x0.430mの外接円概算)
+    footprint_radius: float = 0.35  # 衝突回避(CrowdController)に登録する実効半径 [m](Jackal footprint 0.508x0.430mの外接円概算、
+    # drive_mode="direct_velocity"の場合は円柱の半径としても使う)
+    cylinder_height: float = 0.3  # drive_mode="direct_velocity"時、生成する円柱剛体の高さ [m]
 
 
 JACKAL = RobotConfig()
+
+CYLINDER_ROBOT = RobotConfig(
+    name="cylinder",
+    drive_mode="direct_velocity",
+    camera_prim_path="/World/Robot/Camera",
+    camera_translation=(0.0, 0.0, 0.15),  # 円柱の中心から少し上、正面向き
+    camera_orientation=None,
+    v_linear_max=0.5,
+    v_angular_max=0.5,
+    spawn_offset=0.05,
+    footprint_radius=0.3,
+    cylinder_height=0.3,
+)
 
 
 class EnvConfig(BaseModel):
@@ -84,17 +102,23 @@ class EnvConfig(BaseModel):
     fixed_spawn_yaw_deg: float | None = None
 
     # 人物キャラ (num_humans=0でPointNavigationのみ, envs/human_controller/参照)
-    num_humans: int = 0
+    num_humans: int = 2
     human_controller: str = "orca"  # 衝突回避アルゴリズム。今のところ"orca"のみ実装
     human_speed_range: tuple[float, float] = (1.0, 1.5)  # 歩行速度 [m/s]
-    human_radius: float = 0.18
-    human_collision_dist: float = 0.4  # ロボットとの距離ベース衝突判定しきい値 [m]
+    human_radius: float = 0.2
+    human_avoidance_margin: float = 0.05  # human_radius+human_avoidance_marginはnavmesh_agent_radius_cm以下に収めること
+    human_collision_dist: float = 0.55  # ロボットとの距離ベース衝突判定しきい値 [m]
     human_min_goal_dist: float = 2.0  # 人物のスポーン-ゴール間の最小距離 [m] (min_goal_distと同じ役割)
     human_robot_min_spawn_dist: float = 1.0  # 人物スポーン位置とロボットスポーン位置の最小距離 [m] (1step目での衝突判定を防ぐ)
-    human_anim_stride: int = 3  # ai4animationpyの姿勢更新(LocomotionPool.step())を何物理サブステップに1回行うか
+    human_anim_stride: int = 6  # IRAへのmove_to/set_speed再送信、およびORCAへのIRA実位置・実速度同期を何物理サブステップに1回行うか
+    human_avatar_character: str | None = None  # IRAキャラクターUSD URL。Noneなら`Isaac/People/Characters/`から自動検出
+    human_motion_library: str = "Isaac/People/MotionLibrary/HumanMotionLibrary.usd"
+    human_ira_lookahead_s: float = 2.0  # move_toターゲットの先読み時間(ORCA速度×この秒数、reissue_policy="reissue"時のみ使用)
+    human_ira_reissue_policy: str = "reissue"  # "hold"(IRA単体用。ORCA方向には追従しない) | "reissue"(40万step耐久検証済み。ORCA指令を再送信)
+    human_ira_min_command_speed: float = 0.00  # この閾値未満のORCA速度はidle()として扱う [m/s]
 
     # NavMesh bake
-    navmesh_agent_radius_cm: float = 40.0  # bake時のエージェント半径 [cm]
+    navmesh_agent_radius_cm: float = 40.0  # bake時のエージェント半径 [cm] (ORCA半径human_radius+human_avoidance_marginはこれ以下に収めること。上回るとORCAが要求する間隔がNavMesh上の通路幅を超え、agentがidle()に落ち続けて長時間停止する)
     navmesh_agent_height_cm: float = 200.0  # bake時のエージェント最小天井高 [cm]
 
     @classmethod
